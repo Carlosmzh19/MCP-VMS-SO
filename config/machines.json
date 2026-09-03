@@ -5,7 +5,7 @@
       "os": "windows",
       "ip": "192.168.10.10",
       "description": "Windows 11 - Estacion de trabajo",
-      "ssh_user": "Administrador"
+      "ssh_user": "usuariolocal"
     },
     "winserver-vm": {
       "ssh_host": "winserver-vm",
