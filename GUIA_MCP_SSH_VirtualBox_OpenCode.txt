@@ -1,0 +1,2713 @@
+GUIA COMPLETA: MCP DE ADMINISTRACION SSH PARA DOS MAQUINAS VIRTUALES EN VIRTUALBOX
+======================================================================================
+
+Version de la guia: 1.0
+Fecha: 02-09-2026
+Plataforma principal: Windows (PC host)
+Cliente IA: OpenCode
+Protocolo: Model Context Protocol (MCP)
+Implementacion propuesta: Python + MCP Python SDK v2 + OpenSSH nativo de Windows
+Objetivo: permitir que OpenCode use un MCP local en el host para ejecutar operaciones
+sobre dos VMs mediante SSH.
+
+======================================================================================
+0. RESUMEN DE TU SITUACION ACTUAL
+======================================================================================
+
+Tus conexiones manuales ya funcionan:
+
+    ping 192.168.10.10
+    ping 192.168.10.20
+
+    ssh -i "$env:USERPROFILE\.ssh\id_rsa" usuariolocal@192.168.10.10
+    ssh -i "$env:USERPROFILE\.ssh\id_rsa" Administrador@192.168.10.20
+
+Por lo tanto, NO necesitas que el MCP "resuelva" la red de VirtualBox ni que instales
+el MCP dentro de las VMs.
+
+La arquitectura recomendada es:
+
+    +--------------------------------------------------------------+
+    |                         PC HOST WINDOWS                      |
+    |                                                              |
+    |   OpenCode                                                  |
+    |      |                                                       |
+    |      | MCP stdio                                             |
+    |      v                                                       |
+    |   virtualbox-ssh-mcp (Python)                               |
+    |      |                                                       |
+    |      | llama a ssh.exe / scp.exe del host                    |
+    |      |                                                       |
+    +------+---------------------------+--------------------------+
+           |                           |
+           | SSH                       | SSH
+           v                           v
+    +-------------+             +----------------+
+    | VM 1        |             | VM 2           |
+    | Linux       |             | Windows        |
+    | 192.168.10.10|            | 192.168.10.20  |
+    | SSH : 22    |             | OpenSSH : 22   |
+    | usuariolocal|             | Administrador  |
+    +-------------+             +----------------+
+
+La ventaja de esta arquitectura es que OpenCode solamente conoce herramientas MCP.
+El MCP se encarga de traducir las peticiones del agente a comandos SSH.
+
+IMPORTANTE:
+- No se abre un nuevo servidor HTTP del MCP.
+- No se expone el MCP a la red.
+- OpenCode ejecuta el MCP localmente.
+- El MCP usa el mismo OpenSSH del host que ya probaste manualmente.
+- La clave privada id_rsa se queda en el host y NO se copia al código del MCP.
+- Para empezar, no dependas de Paramiko/AsyncSSH: usar ssh.exe reduce variables y
+  reutiliza exactamente la ruta de autenticacion que ya funciona.
+
+======================================================================================
+1. POR QUE PODIAS TENER TIMEOUT EN OPENCODE
+======================================================================================
+
+Hay varias capas de timeout que no deben confundirse:
+
+1) Timeout de conexion SSH:
+   ssh.exe puede tardar al conectar.
+
+2) Timeout del proceso del MCP:
+   Python puede quedarse esperando a ssh.exe.
+
+3) Timeout de OpenCode para descubrir/cargar herramientas MCP:
+   La documentacion actual de OpenCode indica un timeout local MCP por defecto de 5000 ms
+   para la obtencion de herramientas. Se puede sobrescribir mediante "timeout".
+   Este timeout NO debe interpretarse automaticamente como un limite universal para
+   cualquier comando remoto.
+
+4) Tiempo del comando remoto:
+   un "systemctl status", "journalctl", "Get-WinEvent", una instalacion de paquetes,
+   etc. puede tardar bastante mas que un simple "echo OK".
+
+La solucion es controlar cada capa por separado:
+
+- SSH: ConnectTimeout razonable (por ejemplo 10 s).
+- SSH keepalive: ServerAliveInterval/CountMax.
+- MCP: timeout configurable para el servidor MCP.
+- Herramientas Python: timeout propio para cada comando (por ejemplo 60 s).
+- Para tareas largas, definir posteriormente una herramienta asyncrona de jobs.
+
+NO recomiendo poner ConnectTimeout enorme. Si la VM esta apagada, el agente debe saber
+rapidamente que no puede conectar.
+
+======================================================================================
+2. REQUISITOS DEL HOST WINDOWS
+======================================================================================
+
+El PC host necesita:
+
+- Windows 10/11 o Windows compatible con OpenSSH Client.
+- Python 3.10 o superior.
+- OpenCode.
+- OpenSSH Client (ssh.exe y preferiblemente scp.exe).
+- Tu clave:
+      %USERPROFILE%\.ssh\id_rsa
+      %USERPROFILE%\.ssh\id_rsa.pub
+- Conectividad IP hacia:
+      192.168.10.10
+      192.168.10.20
+
+COMPROBACION 1: SSH
+
+PowerShell:
+
+    Get-Command ssh
+    ssh -V
+
+Debe mostrar una ruta a ssh.exe y una version.
+
+COMPROBACION 2: SCP
+
+    Get-Command scp
+    scp -V
+
+COMPROBACION 3: Python
+
+    python --version
+
+Si "python" no existe, prueba:
+
+    py --version
+
+COMPROBACION 4: clave
+
+    Test-Path "$env:USERPROFILE\.ssh\id_rsa"
+    Test-Path "$env:USERPROFILE\.ssh\id_rsa.pub"
+
+Ambos deberian devolver True.
+
+======================================================================================
+3. CONFIGURACION DE RED EN VIRTUALBOX
+======================================================================================
+
+Tu red ya funciona, así que NO cambies nada solo por seguir esta guia.
+
+La recomendacion para un laboratorio es:
+
+    Adaptador 1 -> NAT
+        Permite salida a Internet de la VM cuando haga falta.
+
+    Adaptador 2 -> Host-Only
+        Permite comunicacion:
+            HOST <-> VM1
+            HOST <-> VM2
+            VM1  <-> VM2
+
+VirtualBox documenta Host-Only como una red donde el host y las VMs pueden comunicarse
+como si estuvieran conectados a un switch virtual, sin que esa interfaz tenga que
+estar expuesta a la red fisica.
+
+Si actualmente tus IP 192.168.10.10 y 192.168.10.20 funcionan desde el host, puedes
+mantener la configuracion existente.
+
+VERIFICACION DESDE HOST:
+
+    ping 192.168.10.10
+    ping 192.168.10.20
+
+VERIFICACION DE PUERTO 22:
+
+    Test-NetConnection 192.168.10.10 -Port 22
+    Test-NetConnection 192.168.10.20 -Port 22
+
+El resultado importante es:
+
+    TcpTestSucceeded : True
+
+======================================================================================
+4. CONFIGURACION DEL CLIENTE SSH DEL HOST
+======================================================================================
+
+Esta parte es MUY importante.
+
+En lugar de que el MCP conozca:
+
+    IP
+    usuario
+    ruta de clave
+
+vamos a crear alias SSH:
+
+    linux-vm
+    windows-vm
+
+El archivo esta en:
+
+    %USERPROFILE%\.ssh\config
+
+Si no existe, crealo.
+
+CONTENIDO PROPUESTO:
+
+    Host linux-vm
+        HostName 192.168.10.10
+        User usuariolocal
+        IdentityFile ~/.ssh/id_rsa
+        IdentitiesOnly yes
+        PreferredAuthentications publickey
+        PasswordAuthentication no
+        ConnectTimeout 10
+        ServerAliveInterval 15
+        ServerAliveCountMax 3
+        StrictHostKeyChecking accept-new
+
+    Host windows-vm
+        HostName 192.168.10.20
+        User Administrador
+        IdentityFile ~/.ssh/id_rsa
+        IdentitiesOnly yes
+        PreferredAuthentications publickey
+        PasswordAuthentication no
+        ConnectTimeout 10
+        ServerAliveInterval 15
+        ServerAliveCountMax 3
+        StrictHostKeyChecking accept-new
+
+NOTAS:
+
+- IdentityFile no contiene la clave; solo indica donde esta.
+- IdentitiesOnly yes evita que el cliente intente claves adicionales innecesarias.
+- PasswordAuthentication no evita que el agente quede esperando una contraseña.
+- ConnectTimeout 10 evita esperas excesivas.
+- ServerAlive* ayuda a detectar conexiones muertas.
+- StrictHostKeyChecking accept-new acepta una nueva clave de host, pero no deberia
+  aceptar silenciosamente una clave cambiada.
+
+COMPROBAR LOS ALIAS:
+
+    ssh -G linux-vm
+    ssh -G windows-vm
+
+COMPROBAR SSH SIN INTERACCION:
+
+    ssh -o BatchMode=yes linux-vm "echo SSH_OK_LINUX"
+    ssh -o BatchMode=yes windows-vm "echo SSH_OK_WINDOWS"
+
+Tambien puedes usar:
+
+    ssh linux-vm
+    ssh windows-vm
+
+Si estos dos comandos funcionan, la capa SSH esta lista.
+
+======================================================================================
+5. SSH-AGENT EN WINDOWS
+======================================================================================
+
+Si tu id_rsa NO tiene passphrase:
+- El MCP puede usarla directamente.
+
+Si tu id_rsa TIENE passphrase:
+- Para evitar que un MCP automatizado se bloquee esperando una pregunta de contraseña,
+  puedes usar ssh-agent del host.
+
+Verificar:
+
+    Get-Service ssh-agent
+
+Configurar inicio automatico (PowerShell como Administrador):
+
+    Get-Service ssh-agent | Set-Service -StartupType Automatic
+    Start-Service ssh-agent
+
+Agregar la clave:
+
+    ssh-add "$env:USERPROFILE\.ssh\id_rsa"
+
+Verificar:
+
+    ssh-add -l
+
+IMPORTANTE:
+Usar ssh-agent mejora la automatizacion cuando la clave tiene passphrase.
+No escribas la passphrase dentro del codigo Python.
+
+======================================================================================
+6. CONFIGURACION DE LA VM LINUX (192.168.10.10)
+======================================================================================
+
+Asumimos:
+
+    IP:       192.168.10.10
+    Usuario:  usuariolocal
+    Puerto:   22
+
+Ya tienes SSH funcional, por lo que solo debes asegurarte de que el servidor SSH
+permanezca disponible al reiniciar.
+
+COMPROBAR:
+
+    sudo systemctl status ssh
+    sudo systemctl enable ssh
+    sudo systemctl start ssh
+
+En distribuciones donde el servicio se llama sshd:
+
+    sudo systemctl status sshd
+
+COMPROBAR QUE ESCUCHA EN PUERTO 22:
+
+    sudo ss -lntp | grep :22
+
+FIREWALL:
+
+Si usas UFW:
+
+    sudo ufw status
+    sudo ufw allow 22/tcp
+
+Es preferible permitir el puerto SSH solo desde la red del laboratorio cuando sea
+posible.
+
+EJEMPLO CON SUBRED 192.168.10.0/24:
+
+    sudo ufw allow from 192.168.10.0/24 to any port 22 proto tcp
+
+No ejecutes un "ufw allow 22/tcp" indiscriminadamente si esta VM queda expuesta a
+otra red.
+
+CLAVE PUBLICA:
+
+El servidor debe tener la clave publica del host en:
+
+    ~/.ssh/authorized_keys
+
+Comprobar:
+
+    ls -la ~/.ssh
+    cat ~/.ssh/authorized_keys
+
+Permisos Linux recomendados:
+
+    chmod 700 ~/.ssh
+    chmod 600 ~/.ssh/authorized_keys
+
+El propietario debe ser el usuario correcto:
+
+    chown -R "$USER:$USER" ~/.ssh
+
+PRUEBA FINAL DESDE HOST:
+
+    ssh -o BatchMode=yes linux-vm "whoami"
+    ssh -o BatchMode=yes linux-vm "hostname"
+    ssh -o BatchMode=yes linux-vm "uname -a"
+
+======================================================================================
+7. CONFIGURACION DE LA VM WINDOWS (192.168.10.20)
+======================================================================================
+
+Asumimos:
+
+    IP:       192.168.10.20
+    Usuario:  Administrador
+    Puerto:   22
+    Servidor: OpenSSH Server
+
+Si ya puedes hacer:
+
+    ssh -i "$env:USERPROFILE\.ssh\id_rsa" Administrador@192.168.10.20
+
+entonces esto ya esta funcional.
+
+AUN ASI conviene revisar:
+
+    Get-Service sshd
+
+Debe estar Running.
+
+Configurar inicio automatico:
+
+    Set-Service -Name sshd -StartupType Automatic
+    Start-Service sshd
+
+COMPROBAR REGLA FIREWALL:
+
+    Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP"
+
+Si no existe, puede crearse:
+
+    New-NetFirewallRule `
+        -Name 'OpenSSH-Server-In-TCP' `
+        -DisplayName 'OpenSSH Server (sshd)' `
+        -Enabled True `
+        -Direction Inbound `
+        -Protocol TCP `
+        -Action Allow `
+        -LocalPort 22
+
+Comprobar:
+
+    Get-NetTCPConnection -LocalPort 22 -State Listen
+
+======================================================================================
+8. CLAVE SSH PARA EL USUARIO ADMINISTRADOR DE WINDOWS
+======================================================================================
+
+ESTA PARTE ES ESPECIAL EN WINDOWS.
+
+Microsoft documenta que para usuarios pertenecientes al grupo Administrators,
+con la configuracion predeterminada de OpenSSH, el archivo de claves autorizadas
+puede ser:
+
+    C:\ProgramData\ssh\administrators_authorized_keys
+
+y no necesariamente:
+
+    C:\Users\Administrador\.ssh\authorized_keys
+
+Comprobar si Administrador pertenece a Administrators:
+
+    net user Administrador
+
+o:
+
+    Get-LocalGroupMember -Group "Administrators"
+
+Si la cuenta es administrativa, comprobar:
+
+    Test-Path "$env:ProgramData\ssh\administrators_authorized_keys"
+
+La clave publica del HOST debe estar en ese archivo.
+
+Puede verse como:
+
+    Get-Content "$env:ProgramData\ssh\administrators_authorized_keys"
+
+CONFIGURACION DE ACL RECOMENDADA POR MICROSOFT:
+
+En PowerShell elevado en la VM Windows:
+
+    icacls.exe "$env:ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F"
+
+En sistemas Windows localizados donde el nombre "Administrators" pueda diferir,
+puede utilizarse el SID del grupo:
+
+    *S-1-5-32-544
+
+La idea es que solo SYSTEM y Administrators tengan acceso al archivo.
+
+======================================================================================
+9. CONFIGURAR POWERSHELL COMO SHELL DE OPENSSH EN WINDOWS
+======================================================================================
+
+Esto NO es obligatorio para que SSH funcione.
+
+Pero para un MCP orientado a administracion Windows es recomendable porque hace que:
+
+    ssh windows-vm "Get-Service sshd"
+
+ejecute PowerShell de forma consistente.
+
+Microsoft documenta que el shell inicial de OpenSSH en Windows es normalmente cmd.exe
+y que se puede cambiar mediante:
+
+    HKLM:\SOFTWARE\OpenSSH
+    DefaultShell
+
+PowerShell:
+
+    $NewItemPropertyParams = @{
+        Path = "HKLM:\SOFTWARE\OpenSSH"
+        Name = "DefaultShell"
+        Value = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        PropertyType = "String"
+        Force = $true
+    }
+
+    New-ItemProperty @NewItemPropertyParams
+
+Reiniciar:
+
+    Restart-Service sshd
+
+Probar:
+
+    ssh windows-vm '$PSVersionTable.PSVersion'
+
+IMPORTANTE:
+Si tu OpenSSH/Windows ya esta configurado y tus comandos remotos funcionan, no cambies
+esta parte a ciegas. Primero prueba y solo cambia el shell si quieres comportamiento
+PowerShell consistente.
+
+======================================================================================
+10. ESTRUCTURA DEL PROYECTO MCP
+======================================================================================
+
+Crea una carpeta:
+
+    C:\Dev\virtualbox-ssh-mcp
+
+Estructura:
+
+    virtualbox-ssh-mcp\
+    |
+    +-- server.py
+    +-- requirements.txt
+    +-- README.txt
+    +-- .gitignore
+    |
+    +-- config\
+    |   +-- machines.json
+    |
+    +-- logs\
+        +-- .gitkeep
+
+No guardes:
+
+    id_rsa
+    id_rsa.pub
+    passwords
+    tokens
+    secretos
+
+dentro del repositorio.
+
+======================================================================================
+11. CREAR ENTORNO VIRTUAL PYTHON
+======================================================================================
+
+En PowerShell:
+
+    cd C:\Dev
+    mkdir virtualbox-ssh-mcp
+    cd virtualbox-ssh-mcp
+
+Crear entorno:
+
+    py -3.12 -m venv .venv
+
+Activar:
+
+    .\.venv\Scripts\Activate.ps1
+
+Si PowerShell rechaza la activacion por la politica de scripts, NO cambies la politica
+globalmente sin entenderla. Puedes abrir una terminal nueva o usar directamente:
+
+    .\.venv\Scripts\python.exe --version
+
+Actualizar pip:
+
+    python -m pip install --upgrade pip
+
+======================================================================================
+12. DEPENDENCIA MCP
+======================================================================================
+
+El SDK oficial actual de Python para MCP tiene una linea v2 estable.
+
+Instalacion:
+
+    pip install "mcp[cli]"
+
+O, desde requirements.txt:
+
+    mcp>=2,<3
+
+Comprobar:
+
+    python -c "import mcp; print(mcp.__file__)"
+
+======================================================================================
+13. ARCHIVO requirements.txt
+======================================================================================
+
+Contenido:
+
+    mcp>=2,<3
+
+No necesitamos Paramiko para la primera version porque vamos a utilizar
+el OpenSSH nativo del sistema. Eso hace que el MCP reutilice exactamente la
+autenticacion SSH que ya probaste.
+
+======================================================================================
+14. ARCHIVO config/machines.json
+======================================================================================
+
+Crea:
+
+    config\machines.json
+
+Contenido:
+
+    {
+      "machines": {
+        "linux-vm": {
+          "ssh_host": "linux-vm",
+          "os": "linux",
+          "description": "VM Linux 192.168.10.10"
+        },
+        "windows-vm": {
+          "ssh_host": "windows-vm",
+          "os": "windows",
+          "description": "VM Windows 192.168.10.20"
+        }
+      }
+    }
+
+NOTA:
+No hace falta guardar usuario ni clave aqui porque ya estan definidos en
+%USERPROFILE%\.ssh\config.
+
+======================================================================================
+15. MCP COMPLETO DE PRIMERA VERSION
+======================================================================================
+
+Crea:
+
+    server.py
+
+CONTENIDO:
+
+    import base64
+    import json
+    import logging
+    import os
+    import platform
+    import subprocess
+    from pathlib import Path
+    from typing import Any
+
+    from mcp.server import MCPServer
+
+
+    BASE_DIR = Path(__file__).resolve().parent
+    MACHINES_FILE = BASE_DIR / "config" / "machines.json"
+    LOG_DIR = BASE_DIR / "logs"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    LOG_FILE = LOG_DIR / "mcp.log"
+
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[
+            logging.FileHandler(LOG_FILE, encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
+
+    logger = logging.getLogger("virtualbox-ssh-mcp")
+
+    SSH_TIMEOUT_DEFAULT = 60
+    SSH_CONNECT_TIMEOUT = 10
+
+    mcp = MCPServer(
+        "virtualbox-ssh-mcp",
+        description="MCP local para administrar VMs mediante SSH desde el host."
+    )
+
+
+    def load_config() -> dict[str, Any]:
+        with MACHINES_FILE.open("r", encoding="utf-8") as file:
+            return json.load(file)
+
+
+    def get_machines() -> dict[str, Any]:
+        config = load_config()
+        machines = config.get("machines", {})
+
+        if not isinstance(machines, dict) or not machines:
+            raise RuntimeError("No hay maquinas configuradas en machines.json")
+
+        return machines
+
+
+    def get_machine(machine: str) -> dict[str, Any]:
+        machines = get_machines()
+
+        if machine not in machines:
+            available = ", ".join(sorted(machines.keys()))
+            raise ValueError(
+                f"Maquina desconocida: {machine}. Disponibles: {available}"
+            )
+
+        return machines[machine]
+
+
+    def run_process(
+        args: list[str],
+        timeout: int = SSH_TIMEOUT_DEFAULT,
+    ) -> dict[str, Any]:
+        logger.info("Ejecutando proceso: %s", args)
+
+        try:
+            completed = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+            )
+
+            return {
+                "ok": completed.returncode == 0,
+                "return_code": completed.returncode,
+                "stdout": completed.stdout,
+                "stderr": completed.stderr,
+                "command": args,
+            }
+
+        except subprocess.TimeoutExpired as exc:
+            logger.error("Timeout ejecutando proceso: %s", args)
+
+            return {
+                "ok": False,
+                "return_code": -1,
+                "stdout": exc.stdout or "",
+                "stderr": (
+                    (exc.stderr or "")
+                    + f"\nProceso excedio el timeout de {timeout} segundos."
+                ),
+                "command": args,
+                "timeout": True,
+            }
+
+        except FileNotFoundError as exc:
+            logger.exception("Executable no encontrado")
+            return {
+                "ok": False,
+                "return_code": -1,
+                "stdout": "",
+                "stderr": str(exc),
+                "command": args,
+                "error": "Executable no encontrado. Verifica PATH.",
+            }
+
+        except Exception as exc:
+            logger.exception("Error ejecutando proceso")
+            return {
+                "ok": False,
+                "return_code": -1,
+                "stdout": "",
+                "stderr": str(exc),
+                "command": args,
+                "error": type(exc).__name__,
+            }
+
+
+    def ssh_args(host: str, command: str) -> list[str]:
+        return [
+            "ssh.exe",
+            "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
+            "-o", "BatchMode=yes",
+            host,
+            command,
+        ]
+
+
+    def scp_destination(host: str, remote_path: str) -> str:
+        return f"{host}:{remote_path}"
+
+
+    def clean_output(result: dict[str, Any], max_chars: int = 20000) -> dict[str, Any]:
+        result["stdout"] = result.get("stdout", "")[-max_chars:]
+        result["stderr"] = result.get("stderr", "")[-max_chars:]
+        return result
+
+
+    @mcp.tool()
+    def list_machines() -> str:
+        """Lista las VMs que este MCP permite administrar."""
+        machines = get_machines()
+
+        output = []
+        for name, data in machines.items():
+            output.append({
+                "name": name,
+                "ssh_host": data["ssh_host"],
+                "os": data.get("os", "unknown"),
+                "description": data.get("description", ""),
+            })
+
+        return json.dumps(output, ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def test_ssh(machine: str) -> str:
+        """
+        Comprueba que el host puede autenticarse por SSH contra la VM usando
+        el alias configurado en ~/.ssh/config.
+        """
+        data = get_machine(machine)
+        host = data["ssh_host"]
+
+        result = run_process(
+            ssh_args(host, "echo MCP_SSH_OK"),
+            timeout=20,
+        )
+
+        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def run_command(
+        machine: str,
+        command: str,
+        timeout_seconds: int = SSH_TIMEOUT_DEFAULT,
+    ) -> str:
+        """
+        Ejecuta un comando remoto por SSH.
+
+        USO:
+        - Linux: comandos bash/shell.
+        - Windows: comandos PowerShell si DefaultShell esta configurado como PowerShell.
+
+        IMPORTANTE:
+        Esta herramienta otorga control administrativo sobre la VM. Usarla solo
+        contra maquinas de laboratorio autorizadas.
+        """
+        if not command.strip():
+            raise ValueError("El comando no puede estar vacio.")
+
+        if timeout_seconds < 1 or timeout_seconds > 600:
+            raise ValueError("timeout_seconds debe estar entre 1 y 600.")
+
+        data = get_machine(machine)
+        host = data["ssh_host"]
+
+        result = run_process(
+            ssh_args(host, command),
+            timeout=timeout_seconds,
+        )
+
+        result["machine"] = machine
+        result["os"] = data.get("os", "unknown")
+
+        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def get_system_info(machine: str) -> str:
+        """Obtiene informacion basica del sistema remoto."""
+        data = get_machine(machine)
+        os_type = data.get("os", "unknown")
+
+        if os_type == "linux":
+            command = (
+                "echo '--- HOSTNAME ---'; hostname; "
+                "echo '--- OS ---'; uname -a; "
+                "echo '--- UPTIME ---'; uptime; "
+                "echo '--- MEMORY ---'; free -h; "
+                "echo '--- DISK ---'; df -h /"
+            )
+        elif os_type == "windows":
+            command = (
+                "$ErrorActionPreference='Continue'; "
+                "Write-Output '--- COMPUTERNAME ---'; $env:COMPUTERNAME; "
+                "Write-Output '--- OS ---'; "
+                "Get-CimInstance Win32_OperatingSystem | "
+                "Select-Object Caption,Version,BuildNumber; "
+                "Write-Output '--- MEMORY ---'; "
+                "Get-CimInstance Win32_OperatingSystem | "
+                "Select-Object TotalVisibleMemorySize,FreePhysicalMemory; "
+                "Write-Output '--- DISK ---'; "
+                "Get-PSDrive -PSProvider FileSystem | "
+                "Select-Object Name,Used,Free"
+            )
+        else:
+            raise ValueError(f"OS no soportado: {os_type}")
+
+        result = run_process(
+            ssh_args(data["ssh_host"], command),
+            timeout=30,
+        )
+
+        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def get_service_status(machine: str, service: str) -> str:
+        """Obtiene el estado de un servicio remoto."""
+        if not service.strip():
+            raise ValueError("service no puede estar vacio.")
+
+        data = get_machine(machine)
+        os_type = data.get("os", "unknown")
+
+        if os_type == "linux":
+            command = f"systemctl status {service} --no-pager"
+        elif os_type == "windows":
+            command = (
+                f"Get-Service -Name '{service}' | "
+                "Select-Object Name,DisplayName,Status,StartType"
+            )
+        else:
+            raise ValueError(f"OS no soportado: {os_type}")
+
+        result = run_process(
+            ssh_args(data["ssh_host"], command),
+            timeout=30,
+        )
+
+        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def restart_service(machine: str, service: str) -> str:
+        """
+        Reinicia un servicio remoto.
+        Requiere privilegios suficientes en la cuenta SSH.
+        """
+        if not service.strip():
+            raise ValueError("service no puede estar vacio.")
+
+        data = get_machine(machine)
+        os_type = data.get("os", "unknown")
+
+        if os_type == "linux":
+            command = f"sudo systemctl restart {service}"
+        elif os_type == "windows":
+            command = f"Restart-Service -Name '{service}' -Force"
+        else:
+            raise ValueError(f"OS no soportado: {os_type}")
+
+        result = run_process(
+            ssh_args(data["ssh_host"], command),
+            timeout=45,
+        )
+
+        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def get_logs(
+        machine: str,
+        source: str,
+        lines: int = 100,
+    ) -> str:
+        """
+        Obtiene logs de un servicio/fuente.
+
+        Linux:
+            source = nombre del servicio para journalctl -u
+
+        Windows:
+            source = nombre de un LogName de Windows Event Log,
+            por ejemplo: System, Application, Security
+        """
+        if not source.strip():
+            raise ValueError("source no puede estar vacio.")
+
+        if lines < 1 or lines > 1000:
+            raise ValueError("lines debe estar entre 1 y 1000.")
+
+        data = get_machine(machine)
+        os_type = data.get("os", "unknown")
+
+        if os_type == "linux":
+            command = (
+                f"journalctl -u {source} -n {lines} "
+                "--no-pager --output=short-iso"
+            )
+        elif os_type == "windows":
+            command = (
+                f"Get-WinEvent -LogName '{source}' -MaxEvents {lines} | "
+                "Select-Object TimeCreated,Id,LevelDisplayName,ProviderName,Message | "
+                "Format-List"
+            )
+        else:
+            raise ValueError(f"OS no soportado: {os_type}")
+
+        result = run_process(
+            ssh_args(data["ssh_host"], command),
+            timeout=60,
+        )
+
+        return json.dumps(clean_output(result, 30000), ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def read_file(
+        machine: str,
+        remote_path: str,
+        max_chars: int = 20000,
+    ) -> str:
+        """Lee un archivo de texto remoto."""
+        if not remote_path.strip():
+            raise ValueError("remote_path no puede estar vacio.")
+
+        if max_chars < 1 or max_chars > 100000:
+            raise ValueError("max_chars debe estar entre 1 y 100000.")
+
+        data = get_machine(machine)
+        os_type = data.get("os", "unknown")
+
+        if os_type == "linux":
+            command = f"cat -- '{remote_path}'"
+        elif os_type == "windows":
+            command = f"Get-Content -Raw -LiteralPath '{remote_path}'"
+        else:
+            raise ValueError(f"OS no soportado: {os_type}")
+
+        result = run_process(
+            ssh_args(data["ssh_host"], command),
+            timeout=30,
+        )
+
+        return json.dumps(
+            clean_output(result, max_chars),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+    @mcp.tool()
+    def write_file(
+        machine: str,
+        remote_path: str,
+        content: str,
+    ) -> str:
+        """
+        Escribe un archivo de texto remoto.
+
+        Para evitar problemas de comillas y caracteres especiales, el contenido
+        se codifica en base64 localmente antes de enviarlo.
+        """
+        if not remote_path.strip():
+            raise ValueError("remote_path no puede estar vacio.")
+
+        data = get_machine(machine)
+        os_type = data.get("os", "unknown")
+
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+
+        if os_type == "linux":
+            command = (
+                f"echo {encoded} | base64 -d | "
+                f"sudo tee -- '{remote_path}' > /dev/null"
+            )
+
+        elif os_type == "windows":
+            command = (
+                "$b64='"
+                + encoded
+                + "'; "
+                "$bytes=[Convert]::FromBase64String($b64); "
+                "$text=[Text.Encoding]::UTF8.GetString($bytes); "
+                f"Set-Content -LiteralPath '{remote_path}' "
+                "-Value $text -Encoding UTF8"
+            )
+        else:
+            raise ValueError(f"OS no soportado: {os_type}")
+
+        result = run_process(
+            ssh_args(data["ssh_host"], command),
+            timeout=30,
+        )
+
+        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def upload_file(
+        machine: str,
+        local_path: str,
+        remote_path: str,
+    ) -> str:
+        """
+        Sube un archivo desde el host hacia la VM mediante scp.
+
+        NOTA:
+        Los paths de Windows remotos pueden requerir el formato que soporte la
+        version de OpenSSH instalada. Para Windows, prueba por ejemplo:
+            /C:/Temp/archivo.txt
+        """
+        local = Path(local_path).expanduser().resolve()
+
+        if not local.exists():
+            raise FileNotFoundError(f"No existe: {local}")
+
+        if not local.is_file():
+            raise ValueError(f"No es un archivo: {local}")
+
+        data = get_machine(machine)
+        host = data["ssh_host"]
+
+        destination = scp_destination(host, remote_path)
+
+        args = [
+            "scp.exe",
+            "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
+            "-o", "BatchMode=yes",
+            str(local),
+            destination,
+        ]
+
+        result = run_process(args, timeout=120)
+        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def download_file(
+        machine: str,
+        remote_path: str,
+        local_path: str,
+    ) -> str:
+        """Descarga un archivo desde la VM hacia el host mediante scp."""
+        target = Path(local_path).expanduser().resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        data = get_machine(machine)
+        host = data["ssh_host"]
+
+        source = scp_destination(host, remote_path)
+
+        args = [
+            "scp.exe",
+            "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
+            "-o", "BatchMode=yes",
+            source,
+            str(target),
+        ]
+
+        result = run_process(args, timeout=120)
+        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+
+
+    @mcp.tool()
+    def check_reachability(machine: str) -> str:
+        """
+        Comprueba desde el host si la IP de la VM responde a ping.
+
+        Usa la IP configurada en el alias SSH.
+        """
+        # Por seguridad y simplicidad, usamos ssh -G para consultar el HostName
+        data = get_machine(machine)
+        host = data["ssh_host"]
+
+        result = run_process(
+            ["ssh.exe", "-G", host],
+            timeout=10,
+        )
+
+        if not result["ok"]:
+            return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+
+        hostname = ""
+        for line in result["stdout"].splitlines():
+            if line.lower().startswith("hostname "):
+                hostname = line.split(" ", 1)[1].strip()
+                break
+
+        if not hostname:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "No se pudo determinar HostName desde ssh -G.",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        ping_result = run_process(
+            ["ping.exe", "-n", "1", hostname],
+            timeout=10,
+        )
+
+        ping_result["machine"] = machine
+        ping_result["resolved_host"] = hostname
+
+        return json.dumps(
+            clean_output(ping_result),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+    if __name__ == "__main__":
+        logger.info("Iniciando virtualbox-ssh-mcp...")
+        logger.info("Host OS: %s", platform.platform())
+        logger.info("Config: %s", MACHINES_FILE)
+        mcp.run()
+
+======================================================================================
+16. IMPORTANTE SOBRE EL CODIGO Y SEGURIDAD
+======================================================================================
+
+La herramienta "run_command" es deliberadamente potente.
+
+Eso significa que un agente que pueda usarla podria ejecutar:
+
+    Linux:
+        rm
+        apt
+        systemctl
+        sudo
+        chmod
+        etc.
+
+    Windows:
+        PowerShell
+        Stop-Service
+        Remove-Item
+        Set-ExecutionPolicy
+        etc.
+
+Por eso este MCP deberia apuntar solamente a VMs de laboratorio.
+
+Para un entorno real, recomendamos una arquitectura con permisos por herramienta:
+
+    lectura:
+        get_system_info
+        get_service_status
+        get_logs
+        read_file
+
+    administracion:
+        restart_service
+        write_file
+
+    alto riesgo:
+        run_command
+        upload_file
+        download_file
+
+Una segunda version puede incorporar:
+- allowlist de comandos
+- bloqueo de comandos destructivos
+- auditoria de cada llamada
+- IDs de operacion
+- aprobacion manual para operaciones destructivas
+- cuentas SSH sin privilegios
+- sudo restringido
+- limites de tamaño de salida
+- limites de tiempo
+- rate limiting
+
+======================================================================================
+17. .gitignore
+======================================================================================
+
+Crea:
+
+    .gitignore
+
+Contenido:
+
+    .venv/
+    __pycache__/
+    *.pyc
+
+    logs/*.log
+
+    .env
+    *.pem
+    *.key
+
+    id_rsa
+    id_rsa.pub
+    authorized_keys
+
+    opencode.local.jsonc
+
+No deberias versionar claves privadas.
+
+======================================================================================
+18. PRIMERA PRUEBA DEL MCP SIN OPENCODE
+======================================================================================
+
+Antes de conectar OpenCode, debes probar que Python puede iniciar el servidor.
+
+Activar entorno:
+
+    cd C:\Dev\virtualbox-ssh-mcp
+    .\.venv\Scripts\Activate.ps1
+
+Ejecutar:
+
+    python server.py
+
+El proceso deberia quedarse esperando.
+
+Eso es CORRECTO.
+
+Un servidor MCP stdio espera solicitudes MCP por stdin/stdout.
+
+IMPORTANTE:
+NO agregues prints normales al stdout del proceso MCP.
+El protocolo usa stdout para la comunicacion MCP.
+
+El codigo usa logging, que puede ir a stderr y a un archivo.
+
+Para detenerlo manualmente:
+
+    Ctrl+C
+
+======================================================================================
+19. PROBAR EL SERVIDOR CON MCP INSPECTOR
+======================================================================================
+
+Una etapa recomendable antes de OpenCode es probar el servidor con MCP Inspector.
+
+El SDK oficial documenta:
+
+    uv run mcp dev server.py
+
+Pero si trabajas solo con pip/venv, tambien puedes comprobar que la CLI quedo
+instalada ejecutando:
+
+    mcp --help
+
+Si tu instalacion actual ofrece el comando de desarrollo del SDK, usa el metodo
+documentado por la version instalada.
+
+La idea es verificar:
+
+    list_machines
+    test_ssh
+    run_command
+    get_system_info
+    get_service_status
+    get_logs
+    read_file
+    write_file
+    etc.
+
+Si aqui funciona, no debes culpar a SSH ni a VirtualBox cuando aparezca un problema
+posterior de integracion con OpenCode.
+
+======================================================================================
+20. CONFIGURACION DE OPENCODE
+======================================================================================
+
+OpenCode soporta servidores MCP locales por transporte stdio.
+
+La configuracion actual utiliza:
+
+    type: "local"
+
+    command: [...]
+
+    cwd: ...
+
+    environment: ...
+
+    enabled: true
+
+    timeout: ...
+
+Para Windows, el archivo global actual puede ubicarse en:
+
+    %USERPROFILE%\.config\opencode\opencode.jsonc
+
+Tambien puedes utilizar una configuracion por proyecto en:
+
+    opencode.json
+
+RECOMENDACION:
+Para este MCP de laboratorio puedes comenzar con configuracion por proyecto.
+
+Ejemplo:
+
+    C:\Dev\virtualbox-ssh-mcp\opencode.json
+
+Contenido:
+
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "virtualbox_ssh": {
+          "type": "local",
+          "command": [
+            "C:\\Dev\\virtualbox-ssh-mcp\\.venv\\Scripts\\python.exe",
+            "C:\\Dev\\virtualbox-ssh-mcp\\server.py"
+          ],
+          "cwd": "C:\\Dev\\virtualbox-ssh-mcp",
+          "enabled": true,
+          "timeout": 30000
+        }
+      }
+    }
+
+NOTA IMPORTANTE SOBRE "timeout":
+La documentacion actual de OpenCode describe este timeout del MCP local como el
+tiempo para obtener las herramientas del MCP y su valor predeterminado actual es
+5000 ms.
+
+No lo confundas con el timeout interno de nuestro ssh.exe.
+Por eso el servidor Python tambien tiene sus propios timeout_seconds.
+
+======================================================================================
+21. CONFIGURACION GLOBAL DE OPENCODE
+======================================================================================
+
+Si quieres que el MCP este disponible desde cualquier proyecto:
+
+    %USERPROFILE%\.config\opencode\opencode.jsonc
+
+Agrega:
+
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "virtualbox_ssh": {
+          "type": "local",
+          "command": [
+            "C:\\Dev\\virtualbox-ssh-mcp\\.venv\\Scripts\\python.exe",
+            "C:\\Dev\\virtualbox-ssh-mcp\\server.py"
+          ],
+          "cwd": "C:\\Dev\\virtualbox-ssh-mcp",
+          "enabled": true,
+          "timeout": 30000
+        }
+      }
+    }
+
+No uses una sintaxis vieja con:
+
+    "mcp": {
+        "servers": {
+            ...
+        }
+    }
+
+si tu version actual de OpenCode utiliza el formato documentado actualmente.
+La documentacion actual de OpenCode muestra los nombres de MCP directamente debajo de
+"mcp".
+
+======================================================================================
+22. COMPROBAR QUE OPENCODE VE EL MCP
+======================================================================================
+
+La CLI actual de OpenCode tiene:
+
+    opencode mcp list
+
+o:
+
+    opencode mcp ls
+
+Usalo desde PowerShell:
+
+    opencode mcp list
+
+Debes ver:
+
+    virtualbox_ssh
+
+con estado de conexion correcto.
+
+Si no aparece:
+
+1. Revisar sintaxis JSONC.
+2. Revisar rutas.
+3. Ejecutar manualmente:
+       C:\Dev\virtualbox-ssh-mcp\.venv\Scripts\python.exe
+       C:\Dev\virtualbox-ssh-mcp\server.py
+4. Revisar:
+       logs\mcp.log
+5. Revisar que OpenCode tenga permiso de ejecutar Python.
+6. Revisar que ssh.exe este en PATH.
+
+======================================================================================
+23. PRIMERA PRUEBA CON OPENCODE
+======================================================================================
+
+No empieces pidiendo algo complejo.
+
+Prueba:
+
+    Usa el MCP virtualbox_ssh y lista las maquinas disponibles.
+
+Luego:
+
+    Usa virtualbox_ssh para comprobar SSH contra linux-vm.
+
+Luego:
+
+    Obtén hostname y sistema operativo de linux-vm.
+
+Luego:
+
+    Comprueba si sshd/ssh esta activo en linux-vm.
+
+En Windows:
+
+    Comprueba SSH contra windows-vm.
+
+    Obtén el nombre del equipo y la version de Windows.
+
+Finalmente:
+
+    Muestra los ultimos 20 eventos del log System de windows-vm.
+
+======================================================================================
+24. EJEMPLOS REALES DE PETICIONES AL AGENTE
+======================================================================================
+
+EJEMPLO 1:
+
+    "Comprueba que las dos VMs esten accesibles y dime cual esta fallando."
+
+El agente deberia:
+
+    check_reachability("linux-vm")
+    test_ssh("linux-vm")
+    check_reachability("windows-vm")
+    test_ssh("windows-vm")
+
+EJEMPLO 2:
+
+    "En la VM Linux revisa el estado de SSH y muestra los ultimos 50 logs."
+
+Usaria:
+
+    get_service_status("linux-vm", "ssh")
+    get_logs("linux-vm", "ssh", 50)
+
+EJEMPLO 3:
+
+    "En la VM Windows verifica si el servicio sshd esta activo."
+
+Usaria:
+
+    get_service_status("windows-vm", "sshd")
+
+EJEMPLO 4:
+
+    "Dime cuanto disco libre queda en las dos VMs."
+
+Usaria:
+
+    get_system_info("linux-vm")
+    get_system_info("windows-vm")
+
+EJEMPLO 5:
+
+    "Reinicia sshd en la VM Windows."
+
+Usaria:
+
+    restart_service("windows-vm", "sshd")
+
+EJEMPLO 6:
+
+    "Lee el archivo /etc/hosts de Linux."
+
+Usaria:
+
+    read_file("linux-vm", "/etc/hosts")
+
+EJEMPLO 7:
+
+    "Lee C:\Windows\System32\drivers\etc\hosts"
+
+Usaria:
+
+    read_file(
+        "windows-vm",
+        "C:\\Windows\\System32\\drivers\\etc\\hosts"
+    )
+
+======================================================================================
+25. PROBLEMA IMPORTANTE: COMILLAS Y ESCAPADO
+======================================================================================
+
+Un MCP que ejecuta shells remotos siempre tiene el problema del quoting.
+
+Linux:
+
+    bash
+    systemctl
+    grep
+    sed
+    awk
+    pipes
+    redireccionamientos
+
+Windows:
+
+    PowerShell
+    comillas simples
+    comillas dobles
+    variables
+    pipes
+
+Por eso:
+
+- Las herramientas especificas deben construir comandos controlados.
+- run_command debe usarse solo como herramienta general.
+- Para paths, preferir herramientas especializadas read_file/write_file.
+- Para servicios, usar get_service_status/restart_service.
+- Para logs, usar get_logs.
+
+Con esto disminuyes los casos en que el modelo tiene que construir una cadena SSH
+compleja.
+
+======================================================================================
+26. MEJORA RECOMENDADA: HERRAMIENTAS ORIENTADAS A LA TAREA
+======================================================================================
+
+Una arquitectura mas madura seria:
+
+    conectividad:
+        list_machines
+        check_reachability
+        test_ssh
+
+    diagnostico:
+        get_system_info
+        get_service_status
+        get_logs
+        read_file
+
+    administracion:
+        restart_service
+        write_file
+
+    transferencia:
+        upload_file
+        download_file
+
+    avanzada:
+        run_command
+
+El modelo deberia preferir herramientas especificas.
+
+Ejemplo:
+
+INCORRECTO:
+
+    run_command("systemctl status nginx")
+
+MEJOR:
+
+    get_service_status("linux-vm", "nginx")
+
+INCORRECTO:
+
+    run_command("journalctl -u nginx -n 100")
+
+MEJOR:
+
+    get_logs("linux-vm", "nginx", 100)
+
+======================================================================================
+27. TIMEOUTS RECOMENDADOS
+======================================================================================
+
+Configuracion inicial:
+
+    SSH ConnectTimeout:
+        10 s
+
+    MCP tool discovery:
+        30000 ms
+
+    test_ssh:
+        20 s
+
+    get_system_info:
+        30 s
+
+    service:
+        30-45 s
+
+    logs:
+        60 s
+
+    upload/download:
+        120 s
+
+    run_command:
+        60 s inicial
+        maximo 600 s
+
+NO uses:
+
+    ConnectTimeout=600
+
+solo para intentar evitar errores.
+
+Un timeout alto hace que el agente parezca "colgado".
+
+======================================================================================
+28. QUE HACER SI OPENCode AUN DA TIMEOUT
+======================================================================================
+
+PASO 1:
+Prueba exactamente:
+
+    ssh -o BatchMode=yes linux-vm "echo OK"
+    ssh -o BatchMode=yes windows-vm "echo OK"
+
+PASO 2:
+Prueba el Python directamente:
+
+    C:\Dev\virtualbox-ssh-mcp\.venv\Scripts\python.exe server.py
+
+PASO 3:
+Revisa el log:
+
+    Get-Content .\logs\mcp.log -Tail 100
+
+PASO 4:
+Comprueba OpenCode:
+
+    opencode mcp list
+
+PASO 5:
+Aumenta el timeout de descubrimiento MCP:
+
+    "timeout": 60000
+
+PASO 6:
+Comprueba que el problema no sea el comando remoto.
+
+Prueba algo extremadamente simple:
+
+    run_command("linux-vm", "echo hello", 10)
+
+    run_command("windows-vm", "$env:COMPUTERNAME", 10)
+
+PASO 7:
+Solo despues prueba comandos largos.
+
+======================================================================================
+29. DEBUG DIRECTO DE SSH
+======================================================================================
+
+Si manualmente:
+
+    ssh linux-vm
+
+funciona pero:
+
+    ssh -o BatchMode=yes linux-vm "echo OK"
+
+falla, ejecuta:
+
+    ssh -vvv linux-vm "echo OK"
+
+Para Windows:
+
+    ssh -vvv windows-vm "echo OK"
+
+Busca especialmente:
+
+    Offering public key
+    Server accepts key
+    Authentication succeeded
+    Entering interactive session
+    channel
+    command
+
+NO compartas logs SSH completos en sitios publicos porque pueden contener informacion
+de tu infraestructura.
+
+======================================================================================
+30. CONTROL DE PERMISOS EN LINUX
+======================================================================================
+
+Para el laboratorio, lo ideal es NO utilizar root directamente.
+
+Mejor:
+
+    SSH -> usuariolocal
+           |
+           +-- sudo para tareas administrativas seleccionadas
+
+Problema:
+Si sudo pide password, una herramienta no interactiva se puede bloquear.
+
+Puedes revisar:
+
+    sudo -n systemctl status ssh
+
+Si devuelve un error porque necesita password, el MCP no debe quedarse esperando.
+
+Puedes configurar sudoers de forma granular mediante:
+
+    sudo visudo
+
+y permitir solo comandos concretos.
+
+Ejemplo conceptual:
+
+    usuariolocal ALL=(root) NOPASSWD: /usr/bin/systemctl status ssh
+    usuariolocal ALL=(root) NOPASSWD: /usr/bin/systemctl restart ssh
+
+NO uses:
+
+    usuariolocal ALL=(ALL) NOPASSWD: ALL
+
+en un sistema real solo para que el agente sea comodo.
+
+======================================================================================
+31. CUENTAS Y PRINCIPIO DE MENOR PRIVILEGIO
+======================================================================================
+
+Una configuracion profesional seria:
+
+    OpenCode
+       |
+       v
+    MCP
+       |
+       +---- SSH lab-admin
+       |
+       +---- VM Linux
+       |
+       +---- VM Windows
+
+Pero la cuenta SSH deberia tener solo los privilegios necesarios.
+
+Para aprendizaje, puede comenzar con tus cuentas actuales.
+
+Para produccion:
+- cuenta administrativa separada
+- clave exclusiva para automatizacion
+- passphrase
+- ssh-agent
+- sudo limitado
+- logs
+- allowlist
+- firewall
+- segmentacion de red
+
+======================================================================================
+32. NO NECESITAS UN MCP HTTP PARA ESTE CASO
+======================================================================================
+
+Tu idea inicial de:
+
+    MCP en host -> HTTP -> SSH -> VMs
+
+no es necesaria para OpenCode.
+
+Usar HTTP agregaria:
+
+    puerto
+    autenticacion
+    firewall
+    proceso residente
+    superficie de ataque
+
+El flujo stdio es suficiente:
+
+    OpenCode
+        |
+        | stdin/stdout
+        v
+    MCP local
+        |
+        | subprocess
+        v
+    ssh.exe
+        |
+        | TCP 22
+        v
+    VM
+
+Esto sigue la filosofia normal de los MCP locales.
+
+======================================================================================
+33. SOBRE CONEXIONES SSH PERSISTENTES
+======================================================================================
+
+Es tentador activar:
+
+    ControlMaster
+    ControlPersist
+    ControlPath
+
+en el ~/.ssh/config del host.
+
+NO lo recomiendo para esta primera version en Windows.
+
+La implementacion de Win32-OpenSSH ha tenido historicamente limitaciones alrededor de
+ControlMaster y caracteristicas de multiplexacion de cliente en Windows.
+
+Por eso la primera version debe funcionar bien con:
+
+    ssh.exe por llamada
+
+Cuando todo este estable, puedes estudiar:
+- AsyncSSH
+- Paramiko
+- WSL OpenSSH
+- un proceso SSH persistente
+- pool de conexiones
+
+Pero primero consigue una implementacion simple, predecible y depurable.
+
+======================================================================================
+34. VERSION 2 DEL MCP: CONEXIONES PERSISTENTES
+======================================================================================
+
+Cuando quieras optimizar, una segunda arquitectura seria:
+
+    OpenCode
+        |
+        v
+    MCP Python
+        |
+        +---- SSH connection pool -> VM1
+        |
+        +---- SSH connection pool -> VM2
+
+Ventajas:
+- menos handshakes
+- menos latencia
+- mejor para muchos comandos
+- mejor para operaciones de automatizacion intensiva
+
+Desventajas:
+- mas complejidad
+- manejo de reconexion
+- manejo de claves
+- manejo de sesiones
+- mas codigo
+
+No lo necesitas para probar el concepto.
+
+======================================================================================
+35. VERSION 2: JOBS PARA COMANDOS LARGOS
+======================================================================================
+
+Para tareas como:
+
+    apt upgrade
+    npm install
+    docker build
+    dotnet restore
+    backups
+    scripts de provisionamiento
+
+no es ideal mantener una llamada MCP esperando 10 minutos.
+
+La mejora seria:
+
+    start_job(machine, command)
+            |
+            v
+        job_id = ABC123
+
+Luego:
+
+    get_job_status(job_id)
+
+y:
+
+    get_job_output(job_id)
+
+Finalmente:
+
+    cancel_job(job_id)
+
+Esto permite que el agente haga:
+
+    iniciar
+    consultar
+    decidir
+    continuar
+
+sin bloquear la herramienta inicial.
+
+======================================================================================
+36. VERSION 2: CONTEXTO DE LAS VMS
+======================================================================================
+
+Otra mejora muy util:
+
+    machine_profile("linux-vm")
+    machine_profile("windows-vm")
+
+Ejemplo de respuesta:
+
+    {
+      "name": "linux-vm",
+      "ip": "192.168.10.10",
+      "os": "Ubuntu",
+      "role": "Linux Server",
+      "ssh_user": "usuariolocal"
+    }
+
+y:
+
+    {
+      "name": "windows-vm",
+      "ip": "192.168.10.20",
+      "os": "Windows Server",
+      "role": "Windows Server",
+      "ssh_user": "Administrador"
+    }
+
+Esto da al modelo contexto para decidir comandos.
+
+======================================================================================
+37. VERSION 2: INVENTARIO Y ESTADO
+======================================================================================
+
+Puedes añadir:
+
+    vm_status(machine)
+
+que devuelva:
+
+    {
+      "reachable": true,
+      "ssh": true,
+      "hostname": "SERVER01",
+      "os": "Windows",
+      "cpu": "...",
+      "memory": "...",
+      "disk": "..."
+    }
+
+Entonces tu agente puede hacer diagnostico autonomo.
+
+Ejemplo:
+
+    "Revisa el estado de las dos VMs y dime si hay algo anormal."
+
+El MCP devuelve datos estructurados.
+
+======================================================================================
+38. VERSION 2: SNAPSHOTS DE VIRTUALBOX
+======================================================================================
+
+IMPORTANTE:
+Hasta ahora el MCP solo administra el sistema operativo por SSH.
+
+Si quieres que el agente controle VirtualBox en si, puedes agregar herramientas en
+el HOST que invoquen:
+
+    VBoxManage
+
+Ejemplos conceptuales:
+
+    list_virtual_machines()
+    vm_power_status()
+    start_vm()
+    stop_vm()
+    snapshot_list()
+    snapshot_take()
+    snapshot_restore()
+
+Pero estas herramientas son DIFERENTES:
+
+    OpenCode
+      |
+      +--> SSH MCP --> sistema operativo de VM
+      |
+      +--> VirtualBox MCP --> VBoxManage en host
+
+Para mayor seguridad, es mejor separarlas.
+
+Ejemplo:
+
+    virtualbox_vm_control
+    virtualbox_ssh
+
+No mezcles ambas responsabilidades al principio.
+
+======================================================================================
+39. VERSION 2: MCP EN DOS CAPAS
+======================================================================================
+
+Una arquitectura avanzada podria ser:
+
+    OpenCode
+       |
+       +---------------------------+
+       |                           |
+       v                           v
+    virtualbox_ssh          virtualbox_control
+       |                           |
+       v                           v
+    ssh.exe                     VBoxManage
+       |                           |
+       v                           v
+    VM1 / VM2                  VirtualBox host
+
+Asi el agente puede:
+- comprobar conectividad SSH
+- reiniciar un servicio
+- apagar una VM
+- iniciar otra VM
+- crear un snapshot
+- restaurar una snapshot
+
+Pero eso debe venir DESPUES de que la capa SSH funcione perfectamente.
+
+======================================================================================
+40. RECOMENDACION DE SEGURIDAD PARA SNAPSHOTS
+======================================================================================
+
+Si añades:
+
+    delete_snapshot
+    restore_snapshot
+    poweroff
+    unregister_vm
+
+clasificalas como herramientas de alto riesgo.
+
+Una mala inferencia del agente podria destruir datos.
+
+Para esas herramientas:
+- exige confirmacion humana
+- registra el comando
+- registra VM
+- registra timestamp
+- evita ejecuciones automaticas
+
+======================================================================================
+41. PROCESO DE INSTALACION COMPLETO EN ORDEN
+======================================================================================
+
+SECUENCIA EXACTA:
+
+[1] HOST
+    Verificar Python.
+
+[2] HOST
+    Verificar ssh.exe.
+
+[3] HOST
+    Verificar id_rsa.
+
+[4] HOST
+    Crear ~/.ssh/config.
+
+[5] HOST
+    Crear alias linux-vm.
+
+[6] HOST
+    Crear alias windows-vm.
+
+[7] HOST
+    Probar:
+        ssh linux-vm
+        ssh windows-vm
+
+[8] LINUX VM
+    Verificar ssh.service.
+
+[9] WINDOWS VM
+    Verificar sshd.
+
+[10] WINDOWS VM
+    Revisar administrators_authorized_keys si corresponde.
+
+[11] HOST
+    Crear C:\Dev\virtualbox-ssh-mcp.
+
+[12] HOST
+    Crear .venv.
+
+[13] HOST
+    Instalar mcp[cli].
+
+[14] HOST
+    Crear machines.json.
+
+[15] HOST
+    Crear server.py.
+
+[16] HOST
+    Ejecutar server.py manualmente.
+
+[17] HOST
+    Verificar log.
+
+[18] HOST
+    Configurar OpenCode.
+
+[19] HOST
+    Ejecutar:
+        opencode mcp list
+
+[20] OpenCode
+    Pedir list_machines.
+
+[21] OpenCode
+    Pedir test_ssh.
+
+[22] OpenCode
+    Pedir get_system_info.
+
+[23] OpenCode
+    Pedir get_logs.
+
+[24] OpenCode
+    Pedir restart_service solo despues de comprobar lectura.
+
+======================================================================================
+42. CHECKLIST DEL HOST
+======================================================================================
+
+    [ ] Python 3.10+
+    [ ] ssh.exe instalado
+    [ ] scp.exe instalado
+    [ ] id_rsa existe
+    [ ] id_rsa no esta en el repo
+    [ ] ~/.ssh/config existe
+    [ ] alias linux-vm funciona
+    [ ] alias windows-vm funciona
+    [ ] ping 192.168.10.10
+    [ ] ping 192.168.10.20
+    [ ] TCP 22 accesible
+    [ ] .venv creado
+    [ ] mcp instalado
+    [ ] server.py arranca
+    [ ] logs/mcp.log se genera
+    [ ] OpenCode ve el MCP
+    [ ] OpenCode puede llamar list_machines
+
+======================================================================================
+43. CHECKLIST VM LINUX
+======================================================================================
+
+    [ ] IP 192.168.10.10
+    [ ] SSH server instalado
+    [ ] SSH activo
+    [ ] SSH habilitado al reiniciar
+    [ ] puerto 22 abierto
+    [ ] clave publica instalada
+    [ ] ~/.ssh permisos correctos
+    [ ] usuariolocal funciona
+    [ ] sudo funciona de forma no interactiva para lo necesario
+    [ ] hostname correcto
+    [ ] logs disponibles
+
+======================================================================================
+44. CHECKLIST VM WINDOWS
+======================================================================================
+
+    [ ] IP 192.168.10.20
+    [ ] OpenSSH Server instalado
+    [ ] servicio sshd activo
+    [ ] sshd automatico
+    [ ] firewall permite TCP 22
+    [ ] clave publica instalada
+    [ ] administrators_authorized_keys revisado
+    [ ] ACL del archivo correcta
+    [ ] Administrador puede iniciar por SSH
+    [ ] PowerShell como shell configurado si se desea
+    [ ] hostname correcto
+    [ ] Get-Service funciona por SSH
+    [ ] Get-WinEvent funciona por SSH
+
+======================================================================================
+45. PRUEBAS FINALES DESDE POWERSHELL DEL HOST
+======================================================================================
+
+    ping 192.168.10.10
+    ping 192.168.10.20
+
+    Test-NetConnection 192.168.10.10 -Port 22
+    Test-NetConnection 192.168.10.20 -Port 22
+
+    ssh -o BatchMode=yes linux-vm "echo LINUX_OK"
+    ssh -o BatchMode=yes windows-vm "echo WINDOWS_OK"
+
+    ssh -o BatchMode=yes linux-vm "hostname"
+    ssh -o BatchMode=yes windows-vm "$env:COMPUTERNAME"
+
+    ssh -o BatchMode=yes linux-vm "systemctl is-active ssh"
+    ssh -o BatchMode=yes windows-vm "Get-Service sshd | Select-Object Status,StartType"
+
+El ultimo comando de Windows presupone PowerShell como shell por defecto.
+
+======================================================================================
+46. PRUEBAS DEL MCP
+======================================================================================
+
+Prueba 1:
+
+    list_machines()
+
+Resultado esperado:
+
+    linux-vm
+    windows-vm
+
+Prueba 2:
+
+    test_ssh("linux-vm")
+
+Esperado:
+
+    MCP_SSH_OK
+
+Prueba 3:
+
+    test_ssh("windows-vm")
+
+Esperado:
+
+    MCP_SSH_OK
+
+Prueba 4:
+
+    get_system_info("linux-vm")
+
+Prueba 5:
+
+    get_system_info("windows-vm")
+
+Prueba 6:
+
+    get_service_status("linux-vm", "ssh")
+
+Prueba 7:
+
+    get_service_status("windows-vm", "sshd")
+
+Prueba 8:
+
+    get_logs("linux-vm", "ssh", 20)
+
+Prueba 9:
+
+    get_logs("windows-vm", "System", 20)
+
+Prueba 10:
+
+    read_file("linux-vm", "/etc/hosts")
+
+Prueba 11:
+
+    read_file("windows-vm", "C:\\Windows\\System32\\drivers\\etc\\hosts")
+
+======================================================================================
+47. QUE SIGNIFICA SI test_ssh FUNCIONA PERO get_system_info FALLA
+======================================================================================
+
+Entonces:
+- red OK
+- SSH OK
+- clave OK
+- MCP OK
+- problema en el comando remoto/shell/permisos
+
+Linux:
+    revisar bash y comandos disponibles.
+
+Windows:
+    revisar si OpenSSH inicia cmd.exe o PowerShell.
+    revisar permisos.
+    revisar quoting.
+
+Esto hace mucho mas facil diagnosticar el problema.
+
+======================================================================================
+48. QUE SIGNIFICA SI OPENCode NO VE EL MCP
+======================================================================================
+
+Entonces el problema NO es VirtualBox.
+
+Revisar:
+
+    C:\Dev\virtualbox-ssh-mcp\.venv\Scripts\python.exe
+    C:\Dev\virtualbox-ssh-mcp\server.py
+    opencode.jsonc / opencode.json
+    ruta del config
+    JSON valido
+    timeout MCP
+    permisos del proceso
+
+Comando util:
+
+    opencode mcp list
+
+Y revisar el archivo de log:
+
+    C:\Dev\virtualbox-ssh-mcp\logs\mcp.log
+
+======================================================================================
+49. QUE SIGNIFICA SI OPENCode VE EL MCP PERO EL TOOL TIMEOUT
+======================================================================================
+
+Entonces ya sabemos:
+
+    MCP discovery OK
+
+pero:
+
+    comando remoto demasiado lento
+    o SSH esperando
+    o comando remoto bloqueado
+
+Solucionar por este orden:
+
+1. test_ssh
+2. run_command echo
+3. comando simple
+4. comando de servicio
+5. logs
+6. comando largo
+
+Nunca empieces con un script de 10 minutos.
+
+======================================================================================
+50. ALTERNATIVA: USAR DIRECTAMENTE OPENCODE + SSH
+======================================================================================
+
+Existe una alternativa de proyecto comunitario orientado a SSH para OpenCode.
+
+Puede ser util para evaluar si realmente necesitas tu propio MCP.
+
+Pero tu MCP tiene una ventaja importante:
+puedes controlar exactamente las herramientas y el comportamiento para TU laboratorio.
+
+Ejemplo:
+
+    "reinicia ssh en la VM Linux"
+
+no requiere que el agente construya manualmente:
+
+    ssh -i ... usuariolocal@192.168.10.10 ...
+
+En su lugar:
+
+    restart_service("linux-vm", "ssh")
+
+Eso reduce complejidad para el agente y hace el sistema mas mantenible.
+
+======================================================================================
+51. POR QUE RECOMIENDO TU MCP FRENTE A UN MCP SSH GENERICO
+======================================================================================
+
+Porque tus maquinas son conocidas:
+
+    linux-vm
+    windows-vm
+
+y sus funciones tambien pueden conocerse:
+
+    Linux:
+        diagnostico
+        servicios
+        logs
+        archivos
+
+    Windows:
+        servicios
+        eventos
+        PowerShell
+        archivos
+
+Por lo tanto puedes crear herramientas especializadas.
+
+Un MCP generico dice:
+
+    "ejecuta esto"
+
+Tu MCP puede decir:
+
+    "comprueba servicio"
+    "consulta logs"
+    "obtiene estado"
+    "reinicia servicio"
+    "lee archivo"
+    "sube archivo"
+
+Eso ofrece mejor contexto al modelo.
+
+======================================================================================
+52. ARQUITECTURA OBJETIVO FINAL
+======================================================================================
+
+                  +----------------------+
+                  |      OpenCode        |
+                  |       Agente IA      |
+                  +----------+-----------+
+                             |
+                             | MCP stdio
+                             v
+                  +----------------------+
+                  | virtualbox-ssh-mcp   |
+                  |        Python        |
+                  +----------+-----------+
+                             |
+                 +-----------+-----------+
+                 |                       |
+                 v                       v
+             ssh.exe                  scp.exe
+                 |                       |
+          +------+-------+          +----+----+
+          |              |          |         |
+          v              v          v         v
+       Linux VM       Windows VM   Linux    Windows
+      192.168.10.10  192.168.10.20
+
+La clave privada solo esta en:
+
+    %USERPROFILE%\.ssh\id_rsa
+
+El MCP NO debe contener la clave.
+
+======================================================================================
+53. ESTRATEGIA DE IMPLEMENTACION POR FASES
+======================================================================================
+
+FASE 1 - CONECTIVIDAD
+    ping
+    TCP 22
+    ssh alias
+    BatchMode
+
+FASE 2 - MCP BASICO
+    list_machines
+    test_ssh
+    run_command
+
+FASE 3 - DIAGNOSTICO
+    get_system_info
+    get_service_status
+    get_logs
+    read_file
+
+FASE 4 - ADMINISTRACION
+    restart_service
+    write_file
+
+FASE 5 - ARCHIVOS
+    upload_file
+    download_file
+
+FASE 6 - ROBUSTEZ
+    logs
+    limites
+    errores
+    timeouts
+    allowlists
+
+FASE 7 - TAREAS LARGAS
+    jobs
+    background processes
+    status
+    output
+    cancel
+
+FASE 8 - VIRTUALBOX
+    VBoxManage
+    start_vm
+    stop_vm
+    snapshot
+    restore
+
+======================================================================================
+54. RECOMENDACION CLAVE SOBRE VIRTUALBOX
+======================================================================================
+
+No mezcles en la primera version:
+
+    SSH
+    VirtualBox API
+    MCP HTTP
+    Docker
+    autenticacion externa
+    bases de datos
+
+Primero consigue:
+
+    OpenCode
+       ->
+    MCP stdio
+       ->
+    ssh.exe
+       ->
+    VM
+
+Cuando esto funcione, el resto se construye de manera incremental.
+
+======================================================================================
+55. COMANDOS PRINCIPALES QUE DEBES TENER A MANO
+======================================================================================
+
+HOST:
+
+    ping 192.168.10.10
+    ping 192.168.10.20
+
+    Test-NetConnection 192.168.10.10 -Port 22
+    Test-NetConnection 192.168.10.20 -Port 22
+
+    ssh linux-vm
+    ssh windows-vm
+
+    ssh -o BatchMode=yes linux-vm "echo OK"
+    ssh -o BatchMode=yes windows-vm "echo OK"
+
+    opencode mcp list
+
+MCP:
+
+    .\.venv\Scripts\Activate.ps1
+    python server.py
+
+LOG:
+
+    Get-Content .\logs\mcp.log -Tail 100
+
+LINUX:
+
+    sudo systemctl status ssh
+    sudo ss -lntp | grep :22
+
+WINDOWS:
+
+    Get-Service sshd
+    Get-NetTCPConnection -LocalPort 22 -State Listen
+    Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP"
+
+======================================================================================
+56. FUENTES OFICIALES CONSULTADAS
+======================================================================================
+
+OpenCode - MCP Servers:
+https://opencode.ai/docs/mcp-servers/
+
+OpenCode - CLI:
+https://dev.opencode.ai/docs/cli/
+
+OpenCode - Config:
+https://dev.opencode.ai/docs/config/
+
+MCP Python SDK:
+https://py.sdk.modelcontextprotocol.io/
+
+MCP Python SDK - Ejecutar servidor:
+https://py.sdk.modelcontextprotocol.io/v2/es/run/
+
+MCP - Transportes:
+https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+
+VirtualBox - Virtual Networking:
+https://docs.oracle.com/en/virtualization/virtualbox/7.2/user/networkingdetails.html
+
+Microsoft - OpenSSH Server Configuration:
+https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration
+
+Microsoft - OpenSSH Key-Based Authentication:
+https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement
+
+Microsoft - OpenSSH Installation / First Use:
+https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse
+
+Win32-OpenSSH:
+https://github.com/PowerShell/Win32-OpenSSH
+
+NOTA:
+La sintaxis y opciones de OpenCode/MCP cambian con las versiones. Esta guia se ha
+preparado con la documentacion web disponible al 02-09-2026. Antes de copiar una
+configuracion de internet de otra version, compara con la documentacion actual.
+
+======================================================================================
+57. CONCLUSION
+======================================================================================
+
+TU ESTADO ACTUAL:
+
+    Host -> 192.168.10.10 por SSH       OK
+    Host -> 192.168.10.20 por SSH       OK
+    Clave id_rsa                        OK
+
+POR LO TANTO:
+
+    NO necesitas resolver otro problema fundamental de red.
+
+LO SIGUIENTE QUE DEBES HACER:
+
+    1. Crear ~/.ssh/config con linux-vm y windows-vm.
+    2. Comprobar "ssh linux-vm" y "ssh windows-vm".
+    3. Crear C:\Dev\virtualbox-ssh-mcp.
+    4. Crear .venv.
+    5. Instalar mcp[cli].
+    6. Crear machines.json.
+    7. Copiar server.py de esta guia.
+    8. Ejecutarlo manualmente.
+    9. Configurar OpenCode con el MCP local stdio.
+   10. Ejecutar "opencode mcp list".
+   11. Probar test_ssh.
+   12. Probar get_system_info.
+   13. Probar logs/servicios.
+   14. Solo despues habilitar operaciones de escritura/reinicio.
+
+ARQUITECTURA FINAL:
+
+    OpenCode
+        |
+        v
+    MCP local (Python)
+        |
+        v
+    ssh.exe / scp.exe
+        |
+        +--------> 192.168.10.10 Linux
+        |
+        +--------> 192.168.10.20 Windows
+
+Esta es la ruta que recomiendo para tu laboratorio porque reutiliza la conectividad
+que ya funciona y evita introducir innecesariamente un servidor MCP HTTP.

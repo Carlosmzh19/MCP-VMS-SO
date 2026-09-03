@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "virtualbox_ssh": {
+      "type": "local",
+      "command": [
+        "C:\\Users\\ASUS\\Desktop\\DEVPROJETS\\MCPVMS\\.venv\\Scripts\\python.exe",
+        "C:\\Users\\ASUS\\Desktop\\DEVPROJETS\\MCPVMS\\server.py"
+      ],
+      "cwd": "C:\\Users\\ASUS\\Desktop\\DEVPROJETS\\MCPVMS",
+      "enabled": true,
+      "timeout": 120000
+    }
+  }
+}

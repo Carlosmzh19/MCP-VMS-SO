@@ -1,0 +1,18 @@
+{
+  "machines": {
+    "win11-vm": {
+      "ssh_host": "win11-vm",
+      "os": "windows",
+      "ip": "192.168.10.10",
+      "description": "Windows 11 - Estacion de trabajo",
+      "ssh_user": "Administrador"
+    },
+    "winserver-vm": {
+      "ssh_host": "winserver-vm",
+      "os": "windows",
+      "ip": "192.168.10.20",
+      "description": "Windows Server - Servidor",
+      "ssh_user": "Administrador"
+    }
+  }
+}
