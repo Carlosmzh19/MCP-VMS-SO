@@ -189,7 +189,7 @@ sudo visudo -c   # debe decir "análisis OK" para 10-mcp-lab
 sudo -n /usr/bin/true && echo SUDO_OK
 ```
 
-> Detalles que muerden (aprendidos a los golpes, ver `docs/plan-linux-mvp.md`):
+> Detalles que muerden (aprendidos a los golpes):
 >
 > - `Defaults:<TU_USUARIO> !use_pty` es **obligatorio**: sin tty, `sudo` con `use_pty` cuelga la sesión SSH.
 > - `tee` crea el archivo en `640`: `sudo` **ignora** sudoers que no sean `0440 root:root`.
@@ -487,7 +487,7 @@ tools/common/                # audit_log compartido
 config/machines.json         # Inventario (ssh_host = alias SSH, os = windows|linux)
 ```
 
-Convenciones: `@mcp.tool() -> str (JSON)`, docstrings en español, `sudo -n` + `shlex.quote` en Linux, `confirm=true` en destructivas, `clean_output()` trunca a la cola. Detalle de decisiones en `docs/` (`plan-linux-mvp.md`, `plan-correctivo.md`, `recomendaciones.md`).
+Convenciones: `@mcp.tool() -> str (JSON)`, docstrings en español, `sudo -n` + `shlex.quote` en Linux, `confirm=true` en destructivas, `clean_output()` trunca a la cola.
 
 ---
 
@@ -495,6 +495,6 @@ Convenciones: `@mcp.tool() -> str (JSON)`, docstrings en español, `sudo -n` + `
 
 | Versión | Estado | Notas |
 |---------|--------|-------|
-| **v1.0-lab** | Funcional: 100 tools únicas (52 Windows + 48 Linux) | Validado contra Windows + Linux Mint 22.1 (`docs/plan-linux-mvp.md` §4: 10/10) |
+| **v1.0-lab** | Funcional: 100 tools únicas (52 Windows + 48 Linux) | Validado contra Windows + Linux Mint 22.1 (batería 10/10: sistema, disco, servicios, logs, red, firewall, archivos, usuarios) |
 | Conocido | `get_event_logs` duplicada (`system.py:90` vs `logs.py:79`, gana `logs`) | Limpieza pendiente, sin impacto |
-| Roadmap | Tests >70%, `opencode.json` portable, rotación de logs | Ver `docs/recomendaciones.md` |
+| Roadmap | Tests >70%, `opencode.json` portable, rotación de logs | |
