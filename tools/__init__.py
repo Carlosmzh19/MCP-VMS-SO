@@ -17,6 +17,7 @@ from .files import register as register_files
 from .security import register as register_security
 from .scheduled_tasks import register as register_scheduled_tasks
 from .advanced import register as register_advanced
+from .linux import register_linux_tools
 
 
 def register_all_tools(mcp_instance) -> None:
@@ -37,3 +38,5 @@ def register_all_tools(mcp_instance) -> None:
     register_security(mcp_instance)
     register_scheduled_tasks(mcp_instance)
     register_advanced(mcp_instance)
+    # Herramientas Linux con sufijo _linux (sin colisión con Windows).
+    register_linux_tools(mcp_instance)

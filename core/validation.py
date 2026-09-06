@@ -97,3 +97,50 @@ def is_destructive(tool_name: str) -> bool:
         True si la herramienta es destructiva.
     """
     return tool_name in DESTRUCTIVE_TOOLS
+
+
+def validate_os_supported(os_type: str) -> None:
+    """
+    Valida que el tipo de SO sea soportado.
+
+    Args:
+        os_type: Tipo de SO a validar ('windows' o 'linux').
+
+    Raises:
+        ValueError: Si el SO no es windows ni linux.
+    """
+    if not os_type or str(os_type).strip().lower() not in ("windows", "linux"):
+        raise ValueError(
+            f"os_type no soportado: {os_type!r}. "
+            "Valores válidos: windows, linux."
+        )
+
+
+def validate_linux_path(path: str) -> None:
+    """
+    Valida que una ruta sea una ruta Linux absoluta válida.
+
+    Args:
+        path: Ruta a validar.
+
+    Raises:
+        ValueError: Si la ruta está vacía, no empieza con /
+            o tiene estilo Windows (ej. C:\\ o C:/).
+    """
+    if not path or not str(path).strip():
+        raise ValueError("path no puede estar vacío.")
+    text = str(path).strip()
+    if len(text) >= 2 and text[1] == ":":
+        raise ValueError(
+            f"Ruta no válida en Linux: {path!r}. "
+            "Las rutas Windows (ej. C:\\...) no están permitidas."
+        )
+    if "\\" in text:
+        raise ValueError(
+            f"Ruta no válida en Linux: {path!r}. Usa '/' como separador."
+        )
+    if not text.startswith("/"):
+        raise ValueError(
+            f"Ruta no válida en Linux: {path!r}. "
+            "Debe ser absoluta y empezar con '/'."
+        )
