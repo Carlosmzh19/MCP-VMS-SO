@@ -144,6 +144,7 @@ def run_process(
     try:
         completed = subprocess.run(
             args,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -206,6 +207,9 @@ SSH_ERROR_PATTERNS: dict[str, str] = {
     "Connection timed out": "No se puede alcanzar el host. Verifica IP, firewall y puerto SSH.",
     "No such host": "Resolución DNS fallida. Verifica hostname en la config SSH.",
     "ssh: connect to host": "Conexión fallida. Verifica que el host sea accesible.",
+    "sudo: a password is required": "El comando requiere sudo sin contraseña. Configura NOPASSWD en sudoers.",
+    "is not in the sudoers file": "El usuario no tiene permisos sudo. Agrégalo al grupo sudo o a sudoers.",
+    "command not found": "Comando no encontrado en la VM. Verifica que esté instalado y en el PATH.",
 }
 
 
@@ -239,6 +243,42 @@ def diagnose_ssh_error(stderr: str, return_code: int) -> str | None:
 # =============================================================================
 # UTILIDADES DE LIMPIEZA
 # =============================================================================
+
+def needs_sudo(os_type: str, requires_privilege: bool) -> bool:
+    """
+    Determina si un comando necesita prefijo sudo.
+
+    Args:
+        os_type: Tipo de SO ('windows' o 'linux').
+        requires_privilege: True si el comando requiere privilegios.
+
+    Returns:
+        True solo cuando el SO es linux y se requieren privilegios.
+    """
+    if not requires_privilege:
+        return False
+    if not os_type:
+        return False
+    return str(os_type).strip().lower() == "linux"
+
+
+def wrap_sudo(command: str, os_type: str, requires_privilege: bool) -> str:
+    """
+    Antepone 'sudo -n' al comando cuando corresponde.
+
+    Args:
+        command: Comando original a ejecutar.
+        os_type: Tipo de SO ('windows' o 'linux').
+        requires_privilege: True si el comando requiere privilegios.
+
+    Returns:
+        Comando con 'sudo -n ' antepuesto solo para linux+privilegiado,
+        sin cambios en cualquier otro caso.
+    """
+    if needs_sudo(os_type, requires_privilege):
+        return f"sudo -n {command}"
+    return command
+
 
 def clean_output(
     result: dict[str, Any],
