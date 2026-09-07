@@ -10,18 +10,16 @@ import logging
 from datetime import datetime
 
 from core.config import get_machine
+from core.ps_escape import escape_ps_single_quote
 from core.ssh import build_ssh_args, run_process, clean_output
-from core.validation import validate_not_empty, validate_lines
+from core.validation import validate_not_empty, validate_lines, require_confirmation
 
 mcp = None
 
 logger = logging.getLogger(__name__)
 
 
-def audit_log(tool: str, machine: str, detail: str) -> None:
-    """Registra una acción de auditoría."""
-    timestamp = datetime.now().isoformat()
-    logger.info("AUDIT: %s | %s | %s | %s", timestamp, tool, machine, detail)
+from core.audit import audit_log
 
 
 def register(mcp_instance):
@@ -87,18 +85,22 @@ def register(mcp_instance):
         return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
 
     @mcp.tool()
-    def get_event_logs(machine: str, log_name: str = "System", lines: int = 100) -> str:
+    def get_system_event_logs(machine: str, log_name: str = "System", lines: int = 100) -> str:
         """
         Obtiene registros del Windows Event Log.
         LogName típicos: System, Application, Security, Setup.
+
+        Nota: la tool canónica 'get_event_logs' vive en tools/logs.py.
+        Este nombre evita la colisión de registro.
         """
         validate_not_empty(machine, "machine")
         validate_not_empty(log_name, "log_name")
         validate_lines(lines)
         data = get_machine(machine)
 
+        esc_log = escape_ps_single_quote(log_name)
         command = (
-            f"Get-WinEvent -LogName '{log_name}' -MaxEvents {lines} -ErrorAction SilentlyContinue | "
+            f"Get-WinEvent -LogName '{esc_log}' -MaxEvents {lines} -ErrorAction SilentlyContinue | "
             f"Select-Object TimeCreated,Id,LevelDisplayName,ProviderName,Message | "
             f"ConvertTo-Json -Compress"
         )
@@ -108,8 +110,12 @@ def register(mcp_instance):
             timeout=60,
         )
 
-        audit_log("get_event_logs", machine, f"log={log_name} lines={lines}")
+        audit_log("get_system_event_logs", machine, f"log={log_name} lines={lines}")
         return json.dumps(clean_output(result, 50000), ensure_ascii=False, indent=2)
+
+    # Alias de compatibilidad (no registrado como tool para evitar
+    # colisión con la canónica tools/logs.py:get_event_logs).
+    get_event_logs = get_system_event_logs
 
     @mcp.tool()
     def get_installed_software(machine: str) -> str:
@@ -198,7 +204,7 @@ def register(mcp_instance):
         data = get_machine(machine)
 
         command = (
-            f"[System.Environment]::SetEnvironmentVariable('{name}', '{value}', '{target}'); "
+            f"[System.Environment]::SetEnvironmentVariable('{escape_ps_single_quote(name)}', '{escape_ps_single_quote(value)}', '{escape_ps_single_quote(target)}'); "
             f"Write-Output 'ENV_VAR_SET_OK'"
         )
 

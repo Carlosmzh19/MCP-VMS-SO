@@ -16,6 +16,11 @@ from .network import register as register_linux_network
 from .security import register as register_linux_security
 from .scheduled_tasks import register as register_linux_scheduled_tasks
 from .advanced import register as register_linux_advanced
+from .identity import register as register_linux_identity
+from .samba import register as register_linux_samba
+from .netplan import register as register_linux_netplan
+from .realm import register as register_linux_realm
+from .audit import register as register_linux_audit
 
 
 def register_linux_tools(mcp_instance) -> None:
@@ -30,3 +35,8 @@ def register_linux_tools(mcp_instance) -> None:
     register_linux_security(mcp_instance)
     register_linux_scheduled_tasks(mcp_instance)
     register_linux_advanced(mcp_instance)
+    register_linux_identity(mcp_instance)
+    register_linux_samba(mcp_instance)
+    register_linux_netplan(mcp_instance)
+    register_linux_realm(mcp_instance)
+    register_linux_audit(mcp_instance)

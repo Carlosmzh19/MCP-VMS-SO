@@ -2,6 +2,8 @@
 tests/test_ssh.py - Tests para core.ssh.
 """
 
+import sys
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -105,8 +107,10 @@ class TestRunProcess:
     """Tests para run_process()."""
 
     def test_successful_command(self):
-        """run_process() debe manejar comandos exitosos."""
-        result = run_process(["echo", "hello"], timeout=5)
+        """run_process() debe manejar comandos exitosos (portable Windows)."""
+        result = run_process(
+            [sys.executable, "-c", "print('hello')"], timeout=15
+        )
         assert result["ok"] is True
         assert result["return_code"] == 0
         assert "hello" in result["stdout"]
@@ -131,7 +135,7 @@ class TestRunProcess:
 
     def test_result_has_required_fields(self):
         """El resultado debe tener campos requeridos."""
-        result = run_process(["echo", "test"], timeout=5)
+        result = run_process([sys.executable, "-c", "print('test')"], timeout=15)
         assert "ok" in result
         assert "return_code" in result
         assert "stdout" in result

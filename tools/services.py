@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 
 from core.config import get_machine
+from core.ps_escape import escape_ps_single_quote
 from core.ssh import build_ssh_args, run_process, clean_output
 from core.validation import validate_not_empty, require_confirmation
 
@@ -18,10 +19,7 @@ mcp = None
 logger = logging.getLogger(__name__)
 
 
-def audit_log(tool: str, machine: str, detail: str) -> None:
-    """Registra una acción de auditoría."""
-    timestamp = datetime.now().isoformat()
-    logger.info("AUDIT: %s | %s | %s | %s", timestamp, tool, machine, detail)
+from core.audit import audit_log
 
 
 def register(mcp_instance):
@@ -57,8 +55,9 @@ def register(mcp_instance):
         validate_not_empty(service, "service")
         data = get_machine(machine)
 
+        esc_svc = escape_ps_single_quote(service)
         command = (
-            f"Get-Service -Name '{service}' | "
+            f"Get-Service -Name '{esc_svc}' | "
             f"Select-Object Name,DisplayName,Status,StartType,ServiceType | "
             f"ConvertTo-Json -Compress"
         )
@@ -78,8 +77,9 @@ def register(mcp_instance):
         validate_not_empty(service, "service")
         data = get_machine(machine)
 
+        esc_svc = escape_ps_single_quote(service)
         command = (
-            f"Start-Service -Name '{service}'; "
+            f"Start-Service -Name '{esc_svc}'; "
             f"if ($?) {{ Write-Output 'SERVICE_STARTED_OK' }} else {{ Write-Output 'START_FAILED' }}"
         )
 
@@ -99,8 +99,9 @@ def register(mcp_instance):
         validate_not_empty(service, "service")
         data = get_machine(machine)
 
+        esc_svc = escape_ps_single_quote(service)
         command = (
-            f"Stop-Service -Name '{service}' -Force; "
+            f"Stop-Service -Name '{esc_svc}' -Force; "
             f"if ($?) {{ Write-Output 'SERVICE_STOPPED_OK' }} else {{ Write-Output 'STOP_FAILED' }}"
         )
 
@@ -119,8 +120,9 @@ def register(mcp_instance):
         validate_not_empty(service, "service")
         data = get_machine(machine)
 
+        esc_svc = escape_ps_single_quote(service)
         command = (
-            f"Restart-Service -Name '{service}' -Force; "
+            f"Restart-Service -Name '{esc_svc}' -Force; "
             f"if ($?) {{ Write-Output 'SERVICE_RESTARTED_OK' }} else {{ Write-Output 'RESTART_FAILED' }}"
         )
 

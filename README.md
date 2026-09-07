@@ -14,7 +14,7 @@
 
 ## 1. ¿Qué es?
 
-**`virtualbox-ssh-mcp`** es un servidor MCP (`server.py:62` `FastMCP(name="virtualbox-ssh-mcp")`) que expone **101 herramientas tipadas** (~53 para Windows + 48 para Linux) para administrar VMs VirtualBox desde tu agente de IA, **reusando el `ssh`/`scp` nativo del host**.
+**`virtualbox-ssh-mcp`** es un servidor MCP (`server.py:62` `FastMCP(name="virtualbox-ssh-mcp")`) que expone **155 herramientas tipadas** (92 Windows/agnósticas+workflows + 63 Linux `*_linux`) para administrar VMs VirtualBox desde tu agente de IA, **reusando el `ssh`/`scp` nativo del host**.
 
 ```
 ┌──────────────┐   stdio (JSON-RPC)    ┌──────────────────┐   subprocess    ┌──────────┐   TCP 22   ┌──────────────┐
@@ -318,6 +318,12 @@ El servidor es **stdio estándar**: cualquier cliente MCP que soporte `command +
 ```
 
 > En Linux/macOS el ejecutable es `<RUTA_ABS>/.venv/bin/python`. Verificar: `opencode mcp list` → `virtualbox_ssh` conectado.
+>
+> **Portable (Fase 6):** copiá `opencode.json.example` a `opencode.json` y reemplazá
+> `${workspaceFolder}` por la ruta absoluta de tu checkout (o dejá la variable si tu
+> cliente la expande). El ejemplo usa `.venv/Scripts/python.exe` (Windows); en
+> Linux/macOS cambiá a `.venv/bin/python`. No commitees tu `opencode.json` con rutas
+> absolutas — el `.example` es la plantilla versionada.
 
 **Claude Code CLI:**
 
@@ -472,17 +478,26 @@ delete_user_linux("<LINUX>", "alumno01", confirm=true)
 
 ```powershell
 # Tests (mocks + binarios reales; sin VM necesaria para la mayoría)
-pytest tests/ -v              # test_config / test_ssh / test_validation
+pytest tests/ -v              # test_config / test_ssh / test_validation / test_gate_validators / test_ad_dns_share / test_workflows
+
+# Calidad Fase 6: py_compile + pytest en verde; ruff mínimo F821 en .ruff.toml
+python -m py_compile server.py tools/__init__.py tools/*.py tools/*/*.py core/*.py
+# ruff no está instalado en el .venv de lab: pip install ruff && ruff check .
+# mypy tampoco está instalado: el gate local es py_compile limpio.
 
 # Estructura actual
-server.py                    # FastMCP + register_all_tools
+server.py                    # FastMCP + register_all_tools (155 tools: 92 Windows/agnósticas+workflows + 63 _linux)
 core/config.py               # Rutas, timeouts, DESTRUCTIVE_TOOLS, get_machine()
 core/ssh.py                  # build_ssh_args/scp/ping, run_process, wrap_sudo, diagnose_ssh_error
 core/os_router.py            # get_os_type, require_os, dispatch windows|linux
 core/validation.py           # 8 validadores (not_empty, timeout, lines, max_chars, confirm, os, linux_path)
-tools/__init__.py            # register_all_tools: 11 módulos Windows + register_linux_tools
-tools/windows… -> tools/*.py # 53 tools (PowerShell)
-tools/linux/*.py             # 48 tools *_linux (bash/systemd/sudo -n/ufw/cron)
+core/security_gate.py        # L2 require_double_confirm + @destructive (SE-QUE-ES-IRREVERSIBLE / SE-QUE-PUEDO-PERDER-SSH)
+core/validators.py           # IP/prefijo/gateway/DNS/FQDN/DN/sam/share/UNC/YAML/ack/password_b64
+core/audit.py                # audit_log + sanitize_detail (sin secretos en logs/JSON)
+tools/__init__.py            # register_all_tools: 11 módulos Windows + windows/ (Fase 2) + register_linux_tools + workflows (Fase 5)
+tools/windows… -> tools/*.py # Windows + AD/DNS/file server/auditoría (PowerShell)
+tools/linux/*.py             # 63 tools *_linux (bash/systemd/sudo -n/ufw/cron + identity/samba/netplan/realm/audit)
+tools/workflows/*.py         # provision_org + check_domain_health + publish_share + collect_evidence (idempotentes)
 tools/common/                # audit_log compartido
 config/machines.json         # Inventario (ssh_host = alias SSH, os = windows|linux)
 ```
@@ -495,6 +510,6 @@ Convenciones: `@mcp.tool() -> str (JSON)`, docstrings en español, `sudo -n` + `
 
 | Versión | Estado | Notas |
 |---------|--------|-------|
-| **v1.0-lab** | Funcional: 100 tools únicas (52 Windows + 48 Linux) | Validado contra Windows + Linux Mint 22.1 (batería 10/10: sistema, disco, servicios, logs, red, firewall, archivos, usuarios) |
+| **v1.0-lab** | Funcional: 155 tools únicas (92 Windows/agnósticas+workflows + 63 Linux `*_linux`) | Validado contra Windows + Linux Mint 22.1 (batería 10/10: sistema, disco, servicios, logs, red, firewall, archivos, usuarios) + Fases 1-5 (AD/DNS/share/Netplan/workflows) con `pytest` en verde sin VMs |
 | Conocido | `get_event_logs` duplicada (`system.py:90` vs `logs.py:79`, gana `logs`) | Limpieza pendiente, sin impacto |
-| Roadmap | Tests >70%, `opencode.json` portable, rotación de logs | |
+| Fase 6 | Calidad + portable: `tests/conftest.py` + `test_ad_dns_share` + `test_workflows`, `.ruff.toml` (F821), `opencode.json.example`, `CHANGELOG.md`, `docs/ADR-ssh-double-confirm.md` | `ruff`/`mypy` no instalados en lab (gate = `py_compile` + `pytest`); `register_all_tools` = 155 |

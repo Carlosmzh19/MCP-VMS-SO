@@ -9,21 +9,31 @@ data = get_machine(machine) antes de usar data.
 import json
 import logging
 import shlex
-from datetime import datetime
 
 from core.config import get_machine
 from core.ssh import build_ssh_args, run_process, clean_output
-from core.validation import validate_not_empty, require_confirmation
+from core.validation import validate_not_empty
+from core.security_gate import require_double_confirm, ACK_SSH
+from core.validators import (
+    validate_dns_ip,
+    validate_gateway_in_subnet,
+    validate_ip,
+    validate_prefix,
+)
+
+from ..network_safe import (
+    POST_CHECK_HINT,
+    SSH_CUT_WARNING,
+    SNAPSHOT_REMINDER,
+    build_preflight,
+)
 
 mcp = None
 
 logger = logging.getLogger(__name__)
 
 
-def audit_log(tool: str, machine: str, detail: str) -> None:
-    """Registra una acción de auditoría."""
-    timestamp = datetime.now().isoformat()
-    logger.info("AUDIT: %s | %s | %s | %s", timestamp, tool, machine, detail)
+from core.audit import audit_log
 
 
 def register(mcp_instance):
@@ -59,17 +69,66 @@ def register(mcp_instance):
         prefix_length: int,
         default_gateway: str = "",
         confirm: bool = False,
+        acknowledge: bool = False,
+        ack_text: str = "",
+        echo_confirm: str = "",
     ) -> str:
         """
-        Cambia la IP de una interfaz Linux (ip addr + nmcli, requiere confirm).
+        Cambia la IP de una interfaz Linux (ip addr + nmcli).
+
+        L2 ACK_SSH con eco de la IP nueva (Fase 4): exige confirm=true +
+        acknowledge=true + ack_text='SE-QUE-PUEDO-PERDER-SSH' + eco de
+        ip_address en echo_confirm. Sin L2 completo retorna dry_run con
+        preflight (sin SSH).
 
         ADVERTENCIA: cambiar la IP de la interfaz de gestión puede cortar
         el acceso SSH (brick). Verifica interfaz y gateway antes de confirmar.
         """
-        require_confirmation(confirm, "set_ip_address_linux")
         validate_not_empty(machine, "machine")
         validate_not_empty(interface, "interface")
         validate_not_empty(ip_address, "ip_address")
+        validate_ip(ip_address.strip())
+        validate_prefix(prefix_length)
+        prefix = int(prefix_length)  # type: ignore[arg-type]
+        if default_gateway:
+            validate_ip(default_gateway.strip())
+
+        preflight = build_preflight(
+            new_ip=ip_address.strip(),
+            prefix=prefix,
+            gateway=default_gateway.strip() if default_gateway else "",
+        )
+
+        gate = require_double_confirm(
+            confirm,
+            acknowledge,
+            ack_text,
+            ACK_SSH,
+            echo_confirm,
+            ip_address.strip(),
+            "set_ip_address_linux",
+        )
+        if not gate["ok"]:
+            audit_log("set_ip_address_linux", machine, "dry_run L2 incompleto")
+            return json.dumps(
+                {
+                    **gate,
+                    "tool": "set_ip_address_linux",
+                    "machine": machine,
+                    "preflight": preflight,
+                    "warning": gate["warning"] + " " + SSH_CUT_WARNING,
+                    "snapshot_reminder": SNAPSHOT_REMINDER,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        if default_gateway:
+            # Con L2 completo el gateway fuera de subred bloquea (brick).
+            validate_gateway_in_subnet(
+                ip_address.strip(), prefix, default_gateway.strip()
+            )
+
         data = get_machine(machine)
 
         q_if = shlex.quote(interface)
@@ -86,16 +145,59 @@ def register(mcp_instance):
             timeout=30,
         )
 
-        audit_log("set_ip_address_linux", machine, f"interface={interface} ip={ip_address}")
-        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+        audit_log("set_ip_address_linux", machine, f"interface={interface} ip={ip_address} L2-ACK-SSH")
+        out = clean_output(result)
+        out["post_check_hint"] = POST_CHECK_HINT
+        return json.dumps(out, ensure_ascii=False, indent=2)
 
     @mcp.tool()
-    def set_dns_server_linux(machine: str, interface: str, dns_server: str, confirm: bool = False) -> str:
-        """Cambia el servidor DNS en Linux (resolvectl/nmcli, requiere confirm)."""
-        require_confirmation(confirm, "set_dns_server_linux")
+    def set_dns_server_linux(
+        machine: str,
+        interface: str,
+        dns_server: str,
+        confirm: bool = False,
+        acknowledge: bool = False,
+        ack_text: str = "",
+        echo_confirm: str = "",
+    ) -> str:
+        """Cambia el servidor DNS en Linux (resolvectl/nmcli).
+
+        L2 ACK_SSH con eco del DNS (Fase 4): exige confirm=true +
+        acknowledge=true + ack_text='SE-QUE-PUEDO-PERDER-SSH' + eco de
+        dns_server en echo_confirm. Sin L2 completo retorna dry_run con
+        preflight (sin SSH).
+        """
         validate_not_empty(machine, "machine")
         validate_not_empty(interface, "interface")
         validate_not_empty(dns_server, "dns_server")
+        validate_dns_ip(dns_server.strip())
+
+        preflight = build_preflight(new_dns=dns_server.strip())
+
+        gate = require_double_confirm(
+            confirm,
+            acknowledge,
+            ack_text,
+            ACK_SSH,
+            echo_confirm,
+            dns_server.strip(),
+            "set_dns_server_linux",
+        )
+        if not gate["ok"]:
+            audit_log("set_dns_server_linux", machine, "dry_run L2 incompleto")
+            return json.dumps(
+                {
+                    **gate,
+                    "tool": "set_dns_server_linux",
+                    "machine": machine,
+                    "preflight": preflight,
+                    "warning": gate["warning"] + " " + SSH_CUT_WARNING,
+                    "snapshot_reminder": SNAPSHOT_REMINDER,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
         data = get_machine(machine)
 
         q_if = shlex.quote(interface)
@@ -110,8 +212,10 @@ def register(mcp_instance):
             timeout=30,
         )
 
-        audit_log("set_dns_server_linux", machine, f"interface={interface} dns={dns_server}")
-        return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
+        audit_log("set_dns_server_linux", machine, f"interface={interface} dns={dns_server} L2-ACK-SSH")
+        out = clean_output(result)
+        out["post_check_hint"] = POST_CHECK_HINT
+        return json.dumps(out, ensure_ascii=False, indent=2)
 
     @mcp.tool()
     def get_dns_cache_linux(machine: str) -> str:

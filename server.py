@@ -14,6 +14,7 @@ Uso:
 import logging
 import platform
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # =============================================================================
@@ -27,7 +28,9 @@ LOG_FILE = LOG_DIR / "mcp.log"
 logging.basicConfig(
     level=logging.INFO,
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        RotatingFileHandler(
+            LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        ),
         logging.StreamHandler(sys.stderr),
     ],
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",

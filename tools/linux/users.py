@@ -4,6 +4,7 @@ tools/linux/users.py - Gestión de usuarios y grupos Linux.
 Usa getent, useradd/userdel, usermod, gpasswd y passwd con sudo -n.
 """
 
+import base64
 import json
 import logging
 import shlex
@@ -18,10 +19,26 @@ mcp = None
 logger = logging.getLogger(__name__)
 
 
-def audit_log(tool: str, machine: str, detail: str) -> None:
-    """Registra una acción de auditoría."""
-    timestamp = datetime.now().isoformat()
-    logger.info("AUDIT: %s | %s | %s | %s", timestamp, tool, machine, detail)
+def _redact_secrets(result: dict, *secrets: str) -> dict:
+    """Reemplaza secretos en command/stdout/stderr por *** (no loguear claves)."""
+    redacted_cmd = []
+    for part in result.get("command", []):
+        text = str(part)
+        for s in secrets:
+            if s:
+                text = text.replace(s, "***")
+        redacted_cmd.append(text)
+    result["command"] = ["REDACTED"] if any("***" in c for c in redacted_cmd) else redacted_cmd
+    for key in ("stdout", "stderr"):
+        text = str(result.get(key, ""))
+        for s in secrets:
+            if s:
+                text = text.replace(s, "***")
+        result[key] = text
+    return result
+
+
+from core.audit import audit_log
 
 
 def register(mcp_instance):
@@ -47,28 +64,51 @@ def register(mcp_instance):
 
     @mcp.tool()
     def create_user_linux(
-        machine: str, username: str, password: str, confirm: bool = False
+        machine: str, username: str, password: str = "", confirm: bool = False,
+        password_b64: str = "",
     ) -> str:
         """Crea un usuario Linux con home (useradd -m + chpasswd, requiere confirm)."""
         require_confirmation(confirm, "create_user_linux")
         validate_not_empty(machine, "machine")
         validate_not_empty(username, "username")
-        validate_not_empty(password, "password")
+        if password_b64:
+            validate_not_empty(password_b64, "password_b64")
+            try:
+                base64.b64decode(password_b64.strip(), validate=True)
+            except Exception:
+                raise ValueError("password_b64 no es base64 válido.")
+        elif password:
+            validate_not_empty(password, "password")
+        else:
+            raise ValueError("Debe aportar 'password' o 'password_b64'.")
         data = get_machine(machine)
 
         q_user = shlex.quote(username)
-        # La contraseña se pasa por stdin a chpasswd (no queda en historial).
-        escaped_pw = password.replace("'", "'\"'\"'")
-        command = (
-            f"sudo -n useradd -m -s /bin/bash {q_user} && "
-            f"echo '{username}:{escaped_pw}' | sudo -n chpasswd && "
-            f"echo 'USER_CREATED_OK'"
-        )
+        if password_b64:
+            b64 = password_b64.strip()
+            q_b64 = shlex.quote(b64)
+            # b64 -> claro solo en tubería remota, nunca en argv/ps en claro.
+            command = (
+                f"sudo -n useradd -m -s /bin/bash {q_user} && "
+                f"(printf '%s:' {q_user}; echo {q_b64} | base64 -d) | sudo -n chpasswd && "
+                f"echo 'USER_CREATED_OK'"
+            )
+            secrets = (b64,)
+        else:
+            # Compat: contraseña en claro solo en tubería a chpasswd.
+            escaped_pw = password.replace("'", "'\"'\"'")
+            command = (
+                f"sudo -n useradd -m -s /bin/bash {q_user} && "
+                f"echo '{username}:{escaped_pw}' | sudo -n chpasswd && "
+                f"echo 'USER_CREATED_OK'"
+            )
+            secrets = (password,)
 
         result = run_process(
             build_ssh_args(data["ssh_host"], command),
             timeout=30,
         )
+        _redact_secrets(result, *secrets)
 
         audit_log("create_user_linux", machine, f"created={username}")
         return json.dumps(clean_output(result), ensure_ascii=False, indent=2)

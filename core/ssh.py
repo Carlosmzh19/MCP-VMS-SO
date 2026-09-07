@@ -81,25 +81,53 @@ def build_scp_args(
     destination: str,
     *,
     connect_timeout: int = SSH_CONNECT_TIMEOUT,
+    direction: str = "upload",
 ) -> list[str]:
     """
     Construye argumentos para scp.exe/scp.
 
     Args:
         host: Alias SSH de la máquina destino.
-        source: Ruta del archivo origen.
-        destination: Ruta remota de destino.
+        source: Ruta origen (local en upload, remota en download).
+        destination: Ruta destino (remota en upload, local en download).
         connect_timeout: Timeout de conexión.
+        direction: "upload" (local -> host:remote) o "download"
+            (host:remote -> local).
 
     Returns:
         Lista de argumentos para subprocess.run().
     """
+    if direction not in ("upload", "download"):
+        raise ValueError(
+            f"direction debe ser 'upload' o 'download', recibido: {direction!r}."
+        )
+    if direction == "upload":
+        remote = destination
+        prefix = f"{host}:"
+        if remote.startswith(prefix):
+            remote_part = remote[len(prefix):]
+        else:
+            remote_part = remote
+        return [
+            SCP_BINARY,
+            "-o", f"ConnectTimeout={connect_timeout}",
+            "-o", "BatchMode=yes",
+            source,
+            f"{host}:{remote_part}",
+        ]
+    # download: source es remoto, destination es local.
+    remote = source
+    prefix = f"{host}:"
+    if remote.startswith(prefix):
+        remote_part = remote[len(prefix):]
+    else:
+        remote_part = remote
     return [
         SCP_BINARY,
         "-o", f"ConnectTimeout={connect_timeout}",
         "-o", "BatchMode=yes",
-        source,
-        f"{host}:{destination}",
+        f"{host}:{remote_part}",
+        destination,
     ]
 
 

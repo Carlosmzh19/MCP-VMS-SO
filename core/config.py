@@ -56,31 +56,11 @@ MAX_EVENT_LOG_LINES = 1000
 
 
 # =============================================================================
-# HERRAMIENTAS DESTRUCTIVAS
+# HERRAMIENTAS DESTRUCTIVAS (Fase 1: viven en core/constants.py)
 # =============================================================================
 
-DESTRUCTIVE_TOOLS = frozenset({
-    "run_command",
-    "run_powershell_script",
-    "set_ip_address",
-    "set_dns_server",
-    "delete_user",
-    "kill_process",
-    "stop_service",
-    "disable_user",
-    "delete_scheduled_task",
-    "remove_user_from_group",
-    "disable_firewall_rule",
-    "write_file",
-    "create_user",
-    "add_user_to_group",
-    "set_environment_var",
-    "set_password_policy",
-    "open_firewall_port",
-    "enable_firewall_rule",
-    "create_shared_folder",
-    "create_scheduled_task",
-})
+# Re-export para compatibilidad Fase 0 (core/validation.py y tests).
+from .constants import DESTRUCTIVE_TOOLS  # noqa: F401
 
 
 # =============================================================================

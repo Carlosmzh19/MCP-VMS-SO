@@ -20,10 +20,7 @@ mcp = None
 logger = logging.getLogger(__name__)
 
 
-def audit_log(tool: str, machine: str, detail: str) -> None:
-    """Registra una acción de auditoría."""
-    timestamp = datetime.now().isoformat()
-    logger.info("AUDIT: %s | %s | %s | %s", timestamp, tool, machine, detail)
+from core.audit import audit_log
 
 
 def _sudo(command: str, data: dict, requires_privilege: bool = False) -> str:
