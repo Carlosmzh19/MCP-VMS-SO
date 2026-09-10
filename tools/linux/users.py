@@ -89,8 +89,8 @@ def register(mcp_instance):
             q_b64 = shlex.quote(b64)
             # b64 -> claro solo en tubería remota, nunca en argv/ps en claro.
             command = (
-                f"sudo -n useradd -m -s /bin/bash {q_user} && "
-                f"(printf '%s:' {q_user}; echo {q_b64} | base64 -d) | sudo -n chpasswd && "
+                f"sudo -n /usr/sbin/useradd -m -s /bin/bash {q_user} && "
+                f"(printf '%s:' {q_user}; echo {q_b64} | base64 -d) | sudo -n /usr/sbin/chpasswd && "
                 f"echo 'USER_CREATED_OK'"
             )
             secrets = (b64,)
@@ -98,8 +98,8 @@ def register(mcp_instance):
             # Compat: contraseña en claro solo en tubería a chpasswd.
             escaped_pw = password.replace("'", "'\"'\"'")
             command = (
-                f"sudo -n useradd -m -s /bin/bash {q_user} && "
-                f"echo '{username}:{escaped_pw}' | sudo -n chpasswd && "
+                f"sudo -n /usr/sbin/useradd -m -s /bin/bash {q_user} && "
+                f"echo '{username}:{escaped_pw}' | sudo -n /usr/sbin/chpasswd && "
                 f"echo 'USER_CREATED_OK'"
             )
             secrets = (password,)
@@ -122,7 +122,7 @@ def register(mcp_instance):
         data = get_machine(machine)
 
         q_user = shlex.quote(username)
-        command = f"sudo -n userdel -r {q_user} && echo 'USER_DELETED_OK'"
+        command = f"sudo -n /usr/sbin/userdel -r {q_user} && echo 'USER_DELETED_OK'"
 
         result = run_process(
             build_ssh_args(data["ssh_host"], command),
@@ -157,7 +157,7 @@ def register(mcp_instance):
         validate_not_empty(group, "group")
         data = get_machine(machine)
 
-        command = f"sudo -n usermod -aG {shlex.quote(group)} {shlex.quote(username)} && echo 'MEMBER_ADDED_OK'"
+        command = f"sudo -n /usr/sbin/usermod -aG {shlex.quote(group)} {shlex.quote(username)} && echo 'MEMBER_ADDED_OK'"
 
         result = run_process(
             build_ssh_args(data["ssh_host"], command),
@@ -178,7 +178,7 @@ def register(mcp_instance):
         validate_not_empty(group, "group")
         data = get_machine(machine)
 
-        command = f"sudo -n gpasswd -d {shlex.quote(username)} {shlex.quote(group)} && echo 'MEMBER_REMOVED_OK'"
+        command = f"sudo -n /usr/bin/gpasswd -d {shlex.quote(username)} {shlex.quote(group)} && echo 'MEMBER_REMOVED_OK'"
 
         result = run_process(
             build_ssh_args(data["ssh_host"], command),
@@ -196,7 +196,7 @@ def register(mcp_instance):
         data = get_machine(machine)
 
         q_user = shlex.quote(username)
-        command = f"sudo -n usermod -U {q_user} 2>/dev/null; sudo -n passwd -u {q_user} && echo 'USER_ENABLED_OK'"
+        command = f"sudo -n /usr/sbin/usermod -U {q_user} 2>/dev/null; sudo -n /usr/bin/passwd -u {q_user} && echo 'USER_ENABLED_OK'"
 
         result = run_process(
             build_ssh_args(data["ssh_host"], command),
@@ -215,7 +215,7 @@ def register(mcp_instance):
         data = get_machine(machine)
 
         q_user = shlex.quote(username)
-        command = f"sudo -n usermod -L {q_user} && sudo -n passwd -l {q_user} && echo 'USER_DISABLED_OK'"
+        command = f"sudo -n /usr/sbin/usermod -L {q_user} && sudo -n /usr/bin/passwd -l {q_user} && echo 'USER_DISABLED_OK'"
 
         result = run_process(
             build_ssh_args(data["ssh_host"], command),

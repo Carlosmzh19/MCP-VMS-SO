@@ -35,7 +35,7 @@ def register(mcp_instance):
 
         command = (
             "echo '--- LOGIN.DEFS ---'; grep -E '^(PASS_MAX_DAYS|PASS_MIN_DAYS|PASS_MIN_LEN|PASS_WARN_AGE)' /etc/login.defs; "
-            "echo '--- CHAGE (root) ---'; sudo -n chage -l root 2>/dev/null || chage -l $(whoami)"
+            "echo '--- CHAGE (root) ---'; sudo -n /usr/bin/chage -l root 2>/dev/null || chage -l $(whoami)"
         )
 
         result = run_process(
@@ -65,17 +65,17 @@ def register(mcp_instance):
 
         parts = []
         if max_pw_age > 0:
-            parts.append(f"sudo -n chage -M {int(max_pw_age)} $(whoami)")
+            parts.append(f"sudo -n /usr/bin/chage -M {int(max_pw_age)} $(whoami)")
         if min_pw_age > 0:
-            parts.append(f"sudo -n chage -m {int(min_pw_age)} $(whoami)")
+            parts.append(f"sudo -n /usr/bin/chage -m {int(min_pw_age)} $(whoami)")
         if min_pw_length > 0:
             parts.append(
-                f"sudo -n sed -i 's/^PASS_MIN_LEN.*/PASS_MIN_LEN {int(min_pw_length)}/' /etc/login.defs"
+                f"sudo -n /bin/sed -i 's/^PASS_MIN_LEN.*/PASS_MIN_LEN {int(min_pw_length)}/' /etc/login.defs"
             )
         if unique_pw_count > 0:
             parts.append(
                 f"grep -q 'remember=' /etc/pam.d/common-password 2>/dev/null && "
-                f"sudo -n sed -i 's/remember=[0-9]*/remember={int(unique_pw_count)}/' /etc/pam.d/common-password || "
+                f"sudo -n /bin/sed -i 's/remember=[0-9]*/remember={int(unique_pw_count)}/' /etc/pam.d/common-password || "
                 f"echo 'UNIQUE_PW_REQUIRES_MANUAL_PAM_EDIT'"
             )
         if not parts:

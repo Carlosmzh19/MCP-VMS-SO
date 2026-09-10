@@ -183,7 +183,7 @@ sudo ufw enable && sudo ufw status numbered
 #    Revertí cualquier regla amplia previa: sudo rm -f /etc/sudoers.d/<TU_USUARIO>-nopasswd
 sudo visudo -f /etc/sudoers.d/10-mcp-lab   # pegar:
 # Defaults:<TU_USUARIO> !use_pty
-# <TU_USUARIO> ALL=(root) NOPASSWD: /usr/bin/tee, /bin/cat, /usr/sbin/useradd, /usr/sbin/userdel, /usr/sbin/usermod, /usr/bin/chpasswd, /bin/systemctl, /usr/bin/systemctl, /usr/bin/journalctl, /usr/sbin/ufw, /sbin/ip, /usr/bin/nmcli, /bin/mkdir, /bin/chmod, /bin/chown, /bin/cp, /bin/mv, /bin/rm, /bin/kill, /usr/bin/pkill, /usr/bin/crontab, /usr/bin/true, /bin/ps
+# <TU_USUARIO> ALL=(root) NOPASSWD: /usr/bin/tee, /bin/cat, /usr/sbin/useradd, /usr/sbin/userdel, /usr/sbin/usermod, /usr/sbin/chpasswd, /bin/systemctl, /usr/bin/systemctl, /usr/bin/journalctl, /usr/sbin/ufw, /sbin/ip, /usr/bin/nmcli, /bin/mkdir, /bin/chmod, /bin/chown, /bin/cp, /bin/mv, /bin/rm, /bin/kill, /usr/bin/pkill, /usr/bin/crontab, /usr/bin/true, /bin/ps, /usr/bin/passwd, /usr/bin/gpasswd, /usr/bin/chage
 sudo chmod 0440 /etc/sudoers.d/10-mcp-lab && sudo chown root:root /etc/sudoers.d/10-mcp-lab
 sudo visudo -c   # debe decir "análisis OK" para 10-mcp-lab
 sudo -n /usr/bin/true && echo SUDO_OK

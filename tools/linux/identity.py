@@ -71,7 +71,7 @@ def register(mcp_instance):
             f"id {q_user}; "
             f"echo '--- GETENT ---'; getent passwd {q_user}; "
             f"echo '--- GROUPS ---'; groups {q_user} 2>/dev/null || id -nG {q_user}; "
-            f"echo '--- CHAGE ---'; sudo -n chage -l {q_user} 2>/dev/null || echo 'CHAGE_UNAVAILABLE'"
+            f"echo '--- CHAGE ---'; sudo -n /usr/bin/chage -l {q_user} 2>/dev/null || echo 'CHAGE_UNAVAILABLE'"
         )
 
         result = run_process(
@@ -129,7 +129,7 @@ def register(mcp_instance):
             "set -euo pipefail",
             f"U={_sq(username)}",
             'if ! id "$U" >/dev/null 2>&1; then echo "USER_NOT_FOUND: $U" >&2; exit 1; fi',
-            f"(printf '%s:' \"$U\"; echo {_sq(b64)} | base64 -d) | sudo -n chpasswd",
+            f"(printf '%s:' \"$U\"; echo {_sq(b64)} | base64 -d) | sudo -n /usr/sbin/chpasswd",
             "echo 'PASSWORD_SET_OK'",
         ]
         inner = "\n".join(inner_lines) + "\n"
@@ -173,12 +173,12 @@ def register(mcp_instance):
         q_user = shlex.quote(username)
         parts = []
         if int(max_days) > 0:
-            parts.append(f"sudo -n chage -M {int(max_days)} {q_user}")
+            parts.append(f"sudo -n /usr/bin/chage -M {int(max_days)} {q_user}")
         if int(min_days) > 0:
-            parts.append(f"sudo -n chage -m {int(min_days)} {q_user}")
+            parts.append(f"sudo -n /usr/bin/chage -m {int(min_days)} {q_user}")
         if int(warn_days) > 0:
-            parts.append(f"sudo -n chage -W {int(warn_days)} {q_user}")
-        parts.append(f"sudo -n chage -l {q_user}")
+            parts.append(f"sudo -n /usr/bin/chage -W {int(warn_days)} {q_user}")
+        parts.append(f"sudo -n /usr/bin/chage -l {q_user}")
         command = "; ".join(parts)
 
         result = run_process(
