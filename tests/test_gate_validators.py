@@ -145,7 +145,8 @@ class TestConstants:
             "netplan_apply_linux", "realm_join_linux", "realm_leave_linux",
             "share_create", "ntfs_grant", "samba_create_share_linux",
             "ad_create_ou", "ad_create_group", "ad_create_user",
-            "ad_set_password", "ad_restart_after_promote",
+            "ad_create_computer", "ad_set_password",
+            "ad_restart_after_promote",
         ):
             assert tool in IRREVERSIBLE_TOOLS
         assert isinstance(IRREVERSIBLE_TOOLS, frozenset)

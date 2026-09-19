@@ -99,6 +99,27 @@ class TestAdIdempotent:
         )
         assert out["already_exists"] is True
 
+    def test_ad_create_computer_already_exists(self):
+        import tools.windows.ad_org as mod
+
+        patch_tool_module(mod, run_stdout="__ALREADY_EXISTS__\n{}")
+        fake = FakeMCP()
+        mod.register_ad_org(fake)
+        fn = fake.tools["ad_create_computer"]
+
+        out = json.loads(
+            fn(
+                machine="winserver-vm",
+                computer_name="LAB-ING-01",
+                path_dn="OU=Lab_Ingenieria,OU=LABORATORIOS,OU=EQUIPOS,OU=UNIVERSIDAD_upsa,DC=lab,DC=sist",
+                enabled=True,
+                confirm=True,
+                acknowledge=True,
+                ack_text="SE-QUE-ES-IRREVERSIBLE",
+            )
+        )
+        assert out["already_exists"] is True
+
 
 # =============================================================================
 # Share: prohibido Everyone

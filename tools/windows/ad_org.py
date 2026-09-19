@@ -145,6 +145,42 @@ def register_ad_org(mcp_instance):
                        f"list computers base={search_base or 'dominio'}")
 
     @mcp.tool()
+    def ad_create_computer(machine: str, computer_name: str, path_dn: str,
+                           enabled: bool = True,
+                           confirm: bool = False, acknowledge: bool = False,
+                           ack_text: str = "") -> str:
+        """Crea equipo AD (idempotente: already_exists). L2."""
+        validate_not_empty(machine, "machine")
+        validate_not_empty(computer_name, "computer_name")
+        validate_dn(path_dn)
+        dry = _dry_run(machine, confirm, acknowledge, ack_text,
+                       "", "", "ad_create_computer")
+        if dry is not None:
+            return dry
+        data = get_machine(machine)
+        cn = escape_ps_single_quote(computer_name.strip())
+        path = escape_ps_single_quote(path_dn.strip())
+        en = "$true" if enabled else "$false"
+        script = (
+            "$ErrorActionPreference='Stop'; "
+            f"$cn='{cn}'; $path='{path}'; "
+            "$found=Get-ADComputer -Filter \"Name -eq '$cn'\" "
+            "-ErrorAction SilentlyContinue | Select-Object -First 1; "
+            f"if($found){{ Write-Output '{MARK_EXISTS}'; "
+            "$found | Select-Object Name,SamAccountName,Enabled,"
+            "DistinguishedName | ConvertTo-Json -Compress }} "
+            "else { New-ADComputer -Name $cn -Path $path "
+            f"-Enabled:{en}; "
+            f"Write-Output '{MARK_CREATED}'; "
+            "Get-ADComputer -Identity $cn | Select-Object Name,"
+            "SamAccountName,Enabled,DistinguishedName "
+            "| ConvertTo-Json -Compress }"
+        )
+        return _finish(_invoke_ps_b64(data, script), machine,
+                       data.get("os", "unknown"), "ad_create_computer",
+                       f"L2-ACK create computer={computer_name} path={path_dn}")
+
+    @mcp.tool()
     def ad_create_ou(machine: str, ou_name: str, path_dn: str,
                      confirm: bool = False, acknowledge: bool = False,
                      ack_text: str = "") -> str:

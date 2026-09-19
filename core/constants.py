@@ -95,5 +95,6 @@ IRREVERSIBLE_TOOLS: frozenset = frozenset({
     "ad_create_ou",
     "ad_create_group",
     "ad_create_user",
+    "ad_create_computer",
     "ad_set_password",
 })
