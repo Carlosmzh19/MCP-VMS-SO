@@ -13,7 +13,7 @@ import pytest
 FAKE_MACHINE = {
     "ssh_host": "test-host",
     "os": "windows",
-    "ip": "192.168.10.20",
+    "ip": "192.168.10.10",
     "description": "VM de pruebas (mock)",
     "ssh_user": "tester",
 }
@@ -21,7 +21,7 @@ FAKE_MACHINE = {
 FAKE_MACHINE_LINUX = {
     "ssh_host": "test-linux",
     "os": "linux",
-    "ip": "192.168.10.30",
+    "ip": "192.168.10.20",
     "description": "VM Linux de pruebas (mock)",
     "ssh_user": "carlos",
 }
