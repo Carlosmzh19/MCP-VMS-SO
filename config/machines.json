@@ -3,22 +3,29 @@
     "win11-vm": {
       "ssh_host": "win11-vm",
       "os": "windows",
-      "ip": "192.168.10.10",
+      "ip": "192.168.10.30",
       "description": "Windows 11 - Estacion de trabajo",
       "ssh_user": "usuariolocal"
     },
     "winserver-vm": {
       "ssh_host": "winserver-vm",
       "os": "windows",
-      "ip": "192.168.10.20",
+      "ip": "192.168.10.10",
       "description": "Windows Server - Servidor",
       "ssh_user": "Administrador"
     },
     "mint-vm": {
       "ssh_host": "mint-vm",
       "os": "linux",
-      "ip": "192.168.10.30",
+      "ip": "192.168.10.40",
       "description": "Linux Mint - Lab carlos+sudo",
+      "ssh_user": "carlos"
+    },
+    "ubuntu-vm": {
+      "ssh_host": "ubuntu-vm",
+      "os": "linux",
+      "ip": "192.168.10.20",
+      "description": "Ubuntu Server",
       "ssh_user": "carlos"
     }
   }

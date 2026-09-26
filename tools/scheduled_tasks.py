@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 
 from core.config import get_machine
+from core.ps_escape import escape_ps_single_quote
 from core.ssh import build_ssh_args, run_process, clean_output
 from core.validation import validate_not_empty, require_confirmation
 
@@ -18,10 +19,7 @@ mcp = None
 logger = logging.getLogger(__name__)
 
 
-def audit_log(tool: str, machine: str, detail: str) -> None:
-    """Registra una acción de auditoría."""
-    timestamp = datetime.now().isoformat()
-    logger.info("AUDIT: %s | %s | %s | %s", timestamp, tool, machine, detail)
+from core.audit import audit_log
 
 
 def register(mcp_instance):
@@ -57,8 +55,9 @@ def register(mcp_instance):
         validate_not_empty(task_name, "task_name")
         data = get_machine(machine)
 
+        esc_task = escape_ps_single_quote(task_name)
         command = (
-            f"Get-ScheduledTask -TaskName '{task_name}' | "
+            f"Get-ScheduledTask -TaskName '{esc_task}' | "
             f"Select-Object TaskName,TaskPath,State,Actions,Triggers,Principal | "
             f"ConvertTo-Json -Depth 5 -Compress"
         )
@@ -90,18 +89,19 @@ def register(mcp_instance):
         data = get_machine(machine)
 
         escaped_action = action.replace("'", "''")
+        esc_task = escape_ps_single_quote(task_name)
 
         if trigger_time:
             command = (
                 f"$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-Command \"{escaped_action}\"'; "
                 f"$trigger = New-ScheduledTaskTrigger -Daily -At '{trigger_time}'; "
-                f"Register-ScheduledTask -TaskName '{task_name}' -Action $action -Trigger $trigger; "
+                f"Register-ScheduledTask -TaskName '{esc_task}' -Action $action -Trigger $trigger; "
                 f"Write-Output 'TASK_CREATED_OK'"
             )
         else:
             command = (
                 f"$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-Command \"{escaped_action}\"'; "
-                f"Register-ScheduledTask -TaskName '{task_name}' -Action $action; "
+                f"Register-ScheduledTask -TaskName '{esc_task}' -Action $action; "
                 f"Write-Output 'TASK_CREATED_OK'"
             )
 
@@ -121,8 +121,9 @@ def register(mcp_instance):
         validate_not_empty(task_name, "task_name")
         data = get_machine(machine)
 
+        esc_task = escape_ps_single_quote(task_name)
         command = (
-            f"Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false; "
+            f"Unregister-ScheduledTask -TaskName '{esc_task}' -Confirm:$false; "
             f"Write-Output 'TASK_DELETED_OK'"
         )
 

@@ -27,10 +27,7 @@ mcp = None
 logger = logging.getLogger(__name__)
 
 
-def audit_log(tool: str, machine: str, detail: str) -> None:
-    """Registra una acción de auditoría."""
-    timestamp = datetime.now().isoformat()
-    logger.info("AUDIT: %s | %s | %s | %s", timestamp, tool, machine, detail)
+from core.audit import audit_log
 
 
 def register(mcp_instance):
@@ -121,7 +118,7 @@ def register(mcp_instance):
         host = data["ssh_host"]
         destination = scp_destination(host, remote_path)
 
-        args = build_scp_args(host, str(local), destination)
+        args = build_scp_args(host, str(local), remote_path, direction="upload")
 
         result = run_process(args, timeout=SCP_TIMEOUT)
 
@@ -142,7 +139,7 @@ def register(mcp_instance):
         host = data["ssh_host"]
         source = scp_destination(host, remote_path)
 
-        args = build_scp_args(host, source, str(target))
+        args = build_scp_args(host, remote_path, str(target), direction="download")
 
         result = run_process(args, timeout=SCP_TIMEOUT)
 
