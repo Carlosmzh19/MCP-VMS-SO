@@ -4,10 +4,10 @@
     "virtualbox_ssh": {
       "type": "local",
       "command": [
-        "C:\\Users\\ASUS\\Desktop\\DEVPROJETS\\MCPVMS\\.venv\\Scripts\\python.exe",
-        "C:\\Users\\ASUS\\Desktop\\DEVPROJETS\\MCPVMS\\server.py"
+        ".venv\\Scripts\\python.exe",
+        "server.py"
       ],
-      "cwd": "C:\\Users\\ASUS\\Desktop\\DEVPROJETS\\MCPVMS",
+      "cwd": ".",
       "enabled": true,
       "timeout": 120000
     }

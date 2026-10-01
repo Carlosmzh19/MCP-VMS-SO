@@ -374,10 +374,10 @@ El servidor habla `stdio` estándar, así que sirve cualquier cliente MCP que so
     "virtualbox_ssh": {
       "type": "local",
       "command": [
-        "<RUTA_AL_PROYECTO>/.venv/Scripts/python.exe",
-        "<RUTA_AL_PROYECTO>/server.py"
+        ".venv\\Scripts\\python.exe",
+        "server.py"
       ],
-      "cwd": "<RUTA_AL_PROYECTO>",
+      "cwd": ".",
       "enabled": true,
       "timeout": 120000
     }
@@ -385,26 +385,17 @@ El servidor habla `stdio` estándar, así que sirve cualquier cliente MCP que so
 }
 ```
 
-En Linux/macOS el ejecutable es `<RUTA_AL_PROYECTO>/.venv/bin/python`.
+**Las rutas son relativas a propósito.** `cwd: "."` hace que OpenCode resuelva el directorio del proyecto y ejecute el comando desde ahí, así que el mismo `opencode.json` funciona en cualquier máquina sin editar nada, sin rutas absolutas ni datos tuyo en el repo.
+
+> `${workspaceFolder}` **no funciona**: es sintaxis de VS Code. OpenCode solo expande `{env:VAR}` y `{file:path}`. Si necesitás una ruta absoluta, definí `MCPVMS_HOME` y usá `{env:MCPVMS_HOME}`.
+
+En Linux/macOS el ejecutable es `.venv/bin/python` (sin `\Scripts\`), y conviene usar `/` como separador para que la config sirva en ambos sistemas.
 
 > **`timeout: 120000` no es opcional.** El default de OpenCode para traer la lista de herramientas es **5000 ms**. Con 156 herramientas, el discovery no llega a tiempo y el servidor simplemente no aparece en el cliente. 120 s le da margen de sobra.
 
-> ⚠️ **Sobre `opencode.json.example`:** la plantilla del repo usa `${workspaceFolder}`, que es **sintaxis de VS Code, no de OpenCode** — no se expande. OpenCode solo expande `{env:VAR}` y `{file:path}`. Si querés la versión portable, definí una variable de entorno con tu ruta y usá el placeholder soportado:
-> ```json
-> "command": [
->   "{env:MCPVMS_HOME}/.venv/Scripts/python.exe",
->   "{env:MCPVMS_HOME}/server.py"
-> ],
-> "cwd": "{env:MCPVMS_HOME}"
-> ```
-> ```bash
-> # Linux/macOS
-> export MCPVMS_HOME=<RUTA_AL_PROYECTO>
-> # Windows (PowerShell, persistente para tu usuario)
-> setx MCPVMS_HOME "<RUTA_AL_PROYECTO>"
-> ```
+> ⚠️ **`opencode.json` está versionado y es seguro commitearlo.** Solo contiene rutas relativas al proyecto, así que no filtra nada de tu máquina y un `git clone` funciona directo sin editar nada.
 
-> ⚠️ **El `opencode.json` del repo tiene rutas absolutas de otra máquina.** Editalo en sitio con tus propios paths. Y si compartís el repo, no comitees tu `opencode.json` con rutas locales: usá el `.example` como plantilla versionada.
+> ⚠️ **`config/machines.json` NO está versionado** (está en `.gitignore`). Contiene tu topología real de VMs: IPs, usuarios y alias SSH. El repo trae `config/machines.example.json` como plantilla — copiala y editá (ver [sección 7.2](#72-inventario-de-máquinas)).
 
 Verificá la conexión con `opencode mcp list` — debería aparecer `virtualbox_ssh` conectado. Las herramientas se exponen con prefijo, o sea `virtualbox_ssh_list_machines`, `virtualbox_ssh_test_ssh`, etc.
 
@@ -702,12 +693,12 @@ Cada herramienta tiene un nivel. La explicación completa está en la [sección 
 | Tool | Nivel | Qué hace |
 |------|-------|----------|
 | `read_file` / `read_file_linux` | L0 | Lee texto. `max_chars` 1–100000. En Linux usa `sudo -n cat` para rutas `/etc/*` |
-| `list_directory` / `list_directory_linux` | L0 | Lista un directorio. Default `C:\` en Windows |
+| `list_directory` / `list_directory_linux` | L0 | Lista un directorio. Default `C:\` (Windows) y `/home` (Linux) |
 | `upload_file` / `upload_file_linux` | L0 | `scp` host → VM. Timeout 120s |
 | `download_file` / `download_file_linux` | L0 | `scp` VM → host. Timeout 120s |
 | `write_file` / `write_file_linux` | L1 | Escribe texto (base64 → `Set-Content` / `sudo -n tee`) |
 
-> ⚠️ **Cuidado con el default de `list_directory_linux`:** el código tiene `/home/carlos` como valor por defecto (heredado de un laboratorio previo). **Siempre pasá la ruta explícitamente** para no operar sobre una ruta que no esperás.
+> ⚠️ **Cuidado con el default de `list_directory_linux`:** el código usa `/home` como valor por defecto. **Pasá la ruta explícitamente** para no listar un directorio distinto del que esperás.
 
 ### 10.6 Procesos
 
@@ -946,9 +937,11 @@ Cinco herramientas (más dos con dominio) necesitan que repitas el valor peligro
 | Síntoma | Causa probable | Fix |
 |---------|----------------|-----|
 | El cliente no lista `virtualbox_ssh` | Discovery excedió el timeout (default 5000 ms con 156 tools) | Agregar `"timeout": 120000` en la config del MCP |
-| El cliente no lista `virtualbox_ssh` | `command` apunta a una ruta literal con `${workspaceFolder}` | OpenCode no expande esa variable. Usá rutas absolutas o `{env:MCPVMS_HOME}` |
+| El cliente no lista `virtualbox_ssh` | `command` apunta a una ruta literal con `${workspaceFolder}` | OpenCode no expande esa variable. Usá rutas relativas con `cwd: "."`, o `{env:MCPVMS_HOME}` |
+| El cliente no lista `virtualbox_ssh` | Faltó crear el venv (`.venv` no existe tras un clone) | Repetir la sección 6.1: `py -3.11 -m venv .venv` + `pip install -r requirements.txt` |
+| El cliente no lista `virtualbox_ssh` | Corriendo en Linux/macOS con la ruta de Windows | Usar `.venv/bin/python` (sin `\Scripts\`) |
 | El cliente no lista `virtualbox_ssh` | JSON mal formado o `python` mal apuntado | Validar el JSON; correr `python server.py` a mano (debe esperar en stdio) |
-| `list_machines` muestra VMs que no existen | Quedaron las 4 entradas de ejemplo del repo | Reemplazar `config/machines.json` por las tuyas (sección 7.2) |
+| `list_machines` muestra VMs que no existen | Copiaste `machines.example.json` sin editarlo | Reemplazar las entradas de ejemplo por las tuyas (sección 7.2) |
 | `test_ssh` → `Permission denied (publickey)` | Alias mal, o clave no autorizada en la VM | `ssh -vvv <ALIAS> "echo OK"` → buscar `Offering public key` / `Server accepts key`. En Windows, revisar los ACL de `administrators_authorized_keys` |
 | `Host key verification failed` | Huella vieja en `known_hosts` | `ssh-keygen -R <IP_VM>` y aceptar una vez |
 | `check_reachability` falla pero `test_ssh` sí | ICMP bloqueado por el firewall de la VM | No es bloqueante: si SSH funciona, el MCP trabaja igual |
