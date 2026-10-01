@@ -2,7 +2,7 @@
 tools/linux/files.py - Operaciones de archivos en Linux.
 
 Usa cat, ls, base64 + sudo -n tee (mismo patrón que tools/files.py:92)
-y SCP sin cambios. Default /home/carlos en listados.
+y SCP sin cambios. Default /home en listados.
 """
 
 import base64
@@ -130,8 +130,12 @@ def register(mcp_instance):
         return json.dumps(clean_output(result), ensure_ascii=False, indent=2)
 
     @mcp.tool()
-    def list_directory_linux(machine: str, remote_path: str = "/home/carlos") -> str:
-        """Lista el contenido de un directorio remoto Linux (ls -la)."""
+    def list_directory_linux(machine: str, remote_path: str = "/home") -> str:
+        """Lista el contenido de un directorio remoto Linux (ls -la).
+
+        Default: /home. Pasá la ruta explícita para no listar un directorio
+        distinto del que esperás.
+        """
         validate_not_empty(machine, "machine")
         data = get_machine(machine)
 

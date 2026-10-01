@@ -19,5 +19,8 @@ id_rsa.pub
 authorized_keys
 known_hosts
 
-opencode.local.jsonc
 docs/
+
+# Config personal: topología real de tus VMs (IPs, usuarios, alias SSH).
+# La plantilla versionada es config/machines.example.json
+config/machines.json
