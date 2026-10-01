@@ -1,0 +1,18 @@
+{
+  "machines": {
+    "mi-vm-windows": {
+      "ssh_host": "mi-vm-windows",
+      "os": "windows",
+      "ip": "192.168.10.20",
+      "description": "Windows 11 - estacion de trabajo",
+      "ssh_user": "miusuario"
+    },
+    "mi-vm-linux": {
+      "ssh_host": "mi-vm-linux",
+      "os": "linux",
+      "ip": "192.168.10.30",
+      "description": "Linux Mint - laboratorio",
+      "ssh_user": "miusuario"
+    }
+  }
+}
